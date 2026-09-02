@@ -3,7 +3,6 @@ import { html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import { selectApplicationSession } from "../../app/agent-selection.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
-import { loadSettings } from "../../app/settings.ts";
 import { readPresenceEntries } from "../../app/user-profile.ts";
 import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
 import { t } from "../../i18n/index.ts";
@@ -14,7 +13,7 @@ import { sessionNavigationTarget } from "../../lib/sessions/route-navigation.ts"
 import { buildAgentMainSessionKey } from "../../lib/sessions/session-key.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
-import "../../styles/chat.css";
+import "../../styles/chat/composer.css";
 import "../../styles/new-session.css";
 import { focusChatComposerFromPrintableKeydown } from "../chat/chat-pane-shared.ts";
 import { renderChatImageLightbox } from "../chat/components/chat-image-lightbox.ts";
@@ -176,6 +175,10 @@ export class NewSessionPage extends OpenClawLightDomElement {
       requestUpdate: () => this.requestUpdate(),
     });
     this.subscriptions = new SubscriptionsController(this)
+      .watch(
+        () => this.context?.theme,
+        (theme, notify) => theme.subscribe(notify),
+      )
       .watch(
         () => this.context?.gateway,
         (gateway, notify) => gateway.subscribe(notify),
@@ -538,91 +541,91 @@ export class NewSessionPage extends OpenClawLightDomElement {
   }
 
   private renderDraftBlock() {
-    const worktreeNameInvalid =
-      this.place.worktree && !isWorktreeNameValid(this.place.worktreeName);
-    const capabilities = this.submission.capabilities;
-    const voiceControl = this.dictation.render(this.routeOwnerKey());
-    const dictationLocked = this.dictation.active;
+    const { place, submission, dictation } = this;
+    const preferences = this.context?.theme.settings;
+    const worktreeNameInvalid = place.worktree && !isWorktreeNameValid(place.worktreeName);
+    const capabilities = submission.capabilities;
+    const voiceControl = dictation.render(
+      this.routeOwnerKey(),
+      preferences?.realtimeTalkInputDeviceId,
+    );
+    const dictationLocked = dictation.active;
     return html`
-      <div class="new-session-page__draft" aria-busy=${String(this.submission.submitting)}>
+      <div class="new-session-page__draft" aria-busy=${String(submission.submitting)}>
         ${this.renderTargetBar()}
         ${worktreeNameInvalid ? renderDraftError(t("newSession.worktreeNameInvalid")) : nothing}
-        ${this.submission.submissionOutcomeUnknown
+        ${submission.submissionOutcomeUnknown
           ? renderDraftError(
               t(
-                this.submission.submissionOutcomeUnknown === "gateway-changed"
+                submission.submissionOutcomeUnknown === "gateway-changed"
                   ? "newSession.createOutcomeUnknown"
                   : "newSession.placementSetupInterrupted",
               ),
-              this.submission.pendingPlacement.sessionKey
+              submission.pendingPlacement.sessionKey
                 ? {
                     label: t("common.reset"),
-                    onClick: () => this.submission.clearPendingPlacementRecovery(),
+                    onClick: () => submission.clearPendingPlacementRecovery(),
                   }
                 : undefined,
             )
           : nothing}
         ${renderNewSessionDraftComposer({
-          agent: this.place.selectedAgent(),
-          agentId: this.place.agentId,
-          attachmentDraft: this.submission.attachmentDraft,
-          canSubmit: !this.submission.submitting && !dictationLocked && this.submission.canSubmit(),
-          submitDisabledReason: this.submission.submitDisabledReason(),
-          blockedSubmitNotice: this.submission.blockedSubmitNotice(),
-          dictationActive: this.dictation.active,
-          dictationPreview: this.dictation.previewDraft(),
-          dictationStatus: this.dictation.renderStatus(),
+          agent: place.selectedAgent(),
+          agentId: place.agentId,
+          attachmentDraft: submission.attachmentDraft,
+          canSubmit: !submission.submitting && !dictationLocked && submission.canSubmit(),
+          submitDisabledReason: submission.submitDisabledReason(),
+          blockedSubmitNotice: submission.blockedSubmitNotice(),
+          dictationActive: dictation.active,
+          dictationPreview: dictation.previewDraft(),
+          dictationStatus: dictation.renderStatus(),
           context: this.context,
           isCatalogTarget: catalog.isTarget(this.data),
           draftOwnerKey: this.routeOwnerKey(),
-          message: this.submission.message,
-          visibility: this.submission.visibility,
+          message: submission.message,
+          visibility: submission.visibility,
           draftAvailable: capabilities.canStartAsDraft(this.context),
-          ...capabilities.composerProps(this.context, this.gateway, this.place.agentId),
-          modelControl: this.place.modelControl,
+          ...capabilities.composerProps(this.context, this.gateway, place.agentId),
+          modelControl: place.modelControl,
           permissionControl: catalog.isTarget(this.data)
             ? undefined
             : renderChatPermissionPicker({
-                canSelectFull: this.place.isAdmin(),
-                defaultMode: this.place.selectedAgent()?.defaultPermissionMode,
-                disabled:
-                  this.submission.submitting ||
-                  Boolean(this.submission.pendingPlacement.sessionKey),
-                disabledReason: this.submission.submitting ? t("newSession.starting") : undefined,
-                mode: this.submission.permission.value,
+                canSelectFull: place.isAdmin(),
+                defaultMode: place.selectedAgent()?.defaultPermissionMode,
+                disabled: submission.submitting || Boolean(submission.pendingPlacement.sessionKey),
+                disabledReason: submission.submitting ? t("newSession.starting") : undefined,
+                mode: submission.permission.value,
                 onSelect: (permissionMode) =>
-                  this.submission.permission.set(permissionMode ?? undefined),
+                  submission.permission.set(permissionMode ?? undefined),
               }),
-          requiresModifier: loadSettings().chatSendShortcut === "modifier-enter",
+          requiresModifier: preferences?.chatSendShortcut === "modifier-enter",
           requestUpdate: () => this.requestUpdate(),
-          submitting: this.submission.submitting,
-          textareaController: this.submission.composerTextarea,
+          submitting: submission.submitting,
+          textareaController: submission.composerTextarea,
           voiceControl,
-          messageLocked: Boolean(this.submission.pendingPlacement.sessionKey),
-          terminalAction: this.submission.showStartInTerminal()
+          messageLocked: Boolean(submission.pendingPlacement.sessionKey),
+          terminalAction: submission.showStartInTerminal()
             ? {
                 canStart:
-                  !this.submission.submitting &&
-                  !dictationLocked &&
-                  this.submission.canSubmit("terminal"),
-                disabledReason: this.submission.submitBlock("terminal")?.reason,
-                onStart: () => void this.submission.startInTerminal(),
+                  !submission.submitting && !dictationLocked && submission.canSubmit("terminal"),
+                disabledReason: submission.submitBlock("terminal")?.reason,
+                onStart: () => void submission.startInTerminal(),
               }
             : undefined,
           onInput: (message) => this.setMessageFromUser(message),
           onOpenImage: this.setImageLightbox,
           onVisibilityChange: (visibility) => {
-            if (!this.submission.submitting && !this.submission.pendingPlacement.sessionKey) {
-              this.submission.setVisibility(visibility);
+            if (!submission.submitting && !submission.pendingPlacement.sessionKey) {
+              submission.setVisibility(visibility);
             }
           },
-          onSubmit: () => void this.submission.submit(),
+          onSubmit: () => void submission.submit(),
           onBackgroundSubmit:
-            this.submission.visibility === "draft"
+            submission.visibility === "draft"
               ? undefined
-              : () => void this.submission.submit(undefined, true),
+              : () => void submission.submit(undefined, true),
         })}
-        ${renderNewSessionIncognitoNotice(this.submission.visibility === "incognito")}
+        ${renderNewSessionIncognitoNotice(submission.visibility === "incognito")}
       </div>
     `;
   }
@@ -654,11 +657,8 @@ export class NewSessionPage extends OpenClawLightDomElement {
       onDraftChange: (next) => this.setMessageFromUser(next),
       onSend: () => void this.submission.submit(),
       onOpenSession: (sessionKey) => {
-        if (this.submission.submitting || this.submission.pendingPlacement.sessionKey) {
-          return;
-        }
-        const context = this.context;
-        if (!context) {
+        const { context, submission } = this;
+        if (!context || submission.submitting || submission.pendingPlacement.sessionKey) {
           return;
         }
         selectApplicationSession({

@@ -213,6 +213,32 @@ describe("searchSessionTranscripts", () => {
     expect(search("alpha").hits).toHaveLength(1);
   });
 
+  it("reaches CJK prose through the LIKE fallback when unicode61 cannot address it (#140736)", async () => {
+    await appendUserMessage("session-1", "agent:main:main", "明天下午三点开项目评审会议讨论排期");
+
+    const result = search("会议");
+    expect(result.indexing).toBe(false);
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]).toMatchObject({ sessionId: "session-1", role: "user" });
+    expect(result.hits[0]?.snippet).toContain("会议");
+    expect(search("会议 排期").hits).toHaveLength(1);
+  });
+
+  it("scopes the CJK LIKE fallback to the requested session keys", async () => {
+    await appendUserMessage("session-1", "agent:main:main", "记录配置变更的会议纪要");
+    await appendUserMessage("session-2", "agent:main:other", "另一条配置相关的会议记录");
+
+    const result = search("配置", { sessionKeys: ["agent:main:other"] });
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]?.sessionId).toBe("session-2");
+  });
+
+  it("keeps non-CJK zero-hit queries off the fallback scan", async () => {
+    await appendUserMessage("session-1", "agent:main:main", "明天下午三点开项目评审会议讨论排期");
+
+    expect(search("zzz")).toEqual({ hits: [], indexing: false, truncated: false });
+  });
+
   it("filters hits to the requested session keys", async () => {
     await appendUserMessage("session-1", "agent:main:main", "shared keyword payload");
     await appendUserMessage("session-2", "agent:main:other", "shared keyword payload");

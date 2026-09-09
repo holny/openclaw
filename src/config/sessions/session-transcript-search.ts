@@ -15,6 +15,11 @@ import {
 const SEARCH_SNIPPET_MAX_CHARS = 500;
 const SEARCH_LIMIT_MAX = 25;
 const SEARCH_QUERY_MAX_CHARS = 4096;
+// Runs of Han/Kana/Hangul have no spaces for the unicode61 tokenizer to split
+// on, so any exact-phrase term overlapping such a run is unaddressable by the
+// FTS index and needs the LIKE retry below.
+const CJK_RUN_PATTERN =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{2,}/u;
 
 type SessionTranscriptSearchHit = {
   sessionKey: string;
@@ -38,6 +43,10 @@ function toFtsQuery(query: string): string {
     .split(/\s+/u)
     .map((token) => `"${token.replaceAll('"', '""')}"`)
     .join(" AND ");
+}
+
+function toLikePattern(term: string): string {
+  return `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
 }
 
 /** Search the per-agent FTS index; kicks off one background reconcile when the index lags. */
@@ -99,7 +108,7 @@ export function searchSessionTranscripts(params: {
     LIMIT ?
     `);
       const values = [toFtsQuery(query), ...sessionFilterValues, limit + 1];
-      const rows = statement.all(...values) as Array<{
+      type TranscriptSearchRow = {
         message_id: unknown;
         rank: unknown;
         role: unknown;
@@ -107,7 +116,34 @@ export function searchSessionTranscripts(params: {
         session_key: unknown;
         snippet: unknown;
         timestamp: unknown;
-      }>;
+      };
+      let rows = statement.all(...values) as TranscriptSearchRow[];
+      if (rows.length === 0 && CJK_RUN_PATTERN.test(query)) {
+        const likeValues = query.split(/\s+/u).filter(Boolean).map(toLikePattern);
+        if (likeValues.length > 0) {
+          // The zero-hit gate keeps this full scan off every served query; the
+          // LIKE terms reuse the FTS row text so snippet()/filters behave the
+          // same as the MATCH path.
+          const fallbackStatement = database.db.prepare(/* sqlite-allow-raw: FTS5 snippet/LIKE */ `
+      SELECT session_windows.session_key AS session_key, session_transcript_fts.session_id AS session_id,
+        message_id, role, timestamp,
+        snippet(session_transcript_fts, 0, '', '', ' … ', 48) AS snippet
+      FROM session_transcript_fts
+      JOIN session_windows ON session_windows.session_id = session_transcript_fts.session_id
+      WHERE ${likeValues.map(() => "text LIKE ? ESCAPE '\\'").join(" AND ")}${whereSession}
+        AND session_transcript_fts.session_id NOT IN (
+          SELECT session_id FROM session_transcript_index_state WHERE needs_rebuild != 0
+        )
+      ORDER BY timestamp DESC, message_id ASC
+      LIMIT ?
+    `);
+          rows = fallbackStatement.all(
+            ...likeValues,
+            ...sessionFilterValues,
+            limit + 1,
+          ) as TranscriptSearchRow[];
+        }
+      }
       const hits = rows.flatMap((row): SessionTranscriptSearchHit[] => {
         if (
           typeof row.session_key !== "string" ||

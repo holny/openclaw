@@ -239,6 +239,30 @@ describe("searchSessionTranscripts", () => {
     expect(search("zzz")).toEqual({ hits: [], indexing: false, truncated: false });
   });
 
+  it("anchors fallback excerpts on the matched CJK term in late messages (#140736)", async () => {
+    const filler = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ");
+    await appendUserMessage("session-1", "agent:main:main", `${filler} 明天开会议讨论排期`);
+
+    const result = search("会议");
+    expect(result.hits).toHaveLength(1);
+    const snippet = result.hits[0]?.snippet ?? "";
+    expect(snippet).toContain("会议");
+    expect(snippet.startsWith("… ")).toBe(true);
+  });
+
+  it("keeps non-CJK fallback terms on exact-word MATCH semantics", async () => {
+    // "scattered" contains the substring "cat" but is not the word "cat";
+    // substring-widening it would resurrect the false positive.
+    await appendUserMessage("session-1", "agent:main:main", "明天开会议讨论 scattered plans");
+
+    expect(search("会议 cat").hits).toHaveLength(0);
+
+    await appendUserMessage("session-2", "agent:main:other", "cat 会议纪要已归档");
+    const result = search("会议 cat");
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]?.sessionId).toBe("session-2");
+  });
+
   it("filters hits to the requested session keys", async () => {
     await appendUserMessage("session-1", "agent:main:main", "shared keyword payload");
     await appendUserMessage("session-2", "agent:main:other", "shared keyword payload");

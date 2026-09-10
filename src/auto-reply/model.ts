@@ -77,6 +77,8 @@ export type ProseModelCandidate = {
     modelScope?: ModelSelectionScope;
     modelScopeConflict: boolean;
   };
+  /** The exact matched directive span; promotion removes it from the routed prompt text. */
+  directiveSpan: string;
 };
 
 /** Extract and remove a `/model` directive, including optional auth profile/runtime hints. */
@@ -166,6 +168,7 @@ export function extractModelDirective(
           ...(scope ? { modelScope: scope } : {}),
           modelScopeConflict: hasAdditionalModelScope(body, modelMatch),
         },
+        directiveSpan: modelMatch[0],
       },
     };
   }

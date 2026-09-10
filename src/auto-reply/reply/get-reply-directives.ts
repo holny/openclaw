@@ -42,6 +42,7 @@ import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { resolveBlockStreamingChunking } from "./block-streaming.js";
 import { buildCommandContext } from "./commands-context.js";
 import { type InlineDirectives, resolveReplyDirectiveCommand } from "./directive-handling.parse.js";
+import { removeDirectiveSpan } from "./directive-parsing.js";
 import {
   reserveSkillCommandNames,
   resolveConfiguredDirectiveAliases,
@@ -317,7 +318,8 @@ export async function resolveReplyDirectives(params: {
     resetTriggered,
   });
   let { directives } = routedDirectives;
-  const { cleanedBody, hasInlineStatus, unauthorizedReasoningDirectiveAttempt } = routedDirectives;
+  const { hasInlineStatus, unauthorizedReasoningDirectiveAttempt } = routedDirectives;
+  let cleanedBody = routedDirectives.cleanedBody;
 
   sessionCtx.agentText = cleanedBody;
   sessionCtx.BodyForAgent = cleanedBody;
@@ -448,6 +450,7 @@ export async function resolveReplyDirectives(params: {
       provider,
       model,
       hasModelDirective: directives.hasModelDirective,
+      hasTentativeModelDirective: directives.proseModelCandidate !== undefined,
       hasOneTurnModelOverride,
       skipStoredModelOverride,
       hasResolvedHeartbeatModelOverride,
@@ -536,6 +539,27 @@ export async function resolveReplyDirectives(params: {
   provider = applyResult.provider;
   model = applyResult.model;
   contextTokens = applyResult.contextTokens;
+  const promotedProseModelCandidate = applyResult.promotedProseModelCandidate;
+  if (promotedProseModelCandidate) {
+    // Promotion happened after routing already projected the sender-owned text:
+    // strip the accepted directive span from that same projection the way a
+    // parse-time acceptance would have, leaving supplemental context untouched.
+    const spanIndex = cleanedBody.indexOf(promotedProseModelCandidate.directiveSpan);
+    if (spanIndex >= 0) {
+      const projected = removeDirectiveSpan(
+        cleanedBody,
+        spanIndex,
+        spanIndex + promotedProseModelCandidate.directiveSpan.length,
+      );
+      if (projected !== cleanedBody) {
+        cleanedBody = projected;
+        sessionCtx.agentText = projected;
+        sessionCtx.BodyForAgent = projected;
+        sessionCtx.Body = projected;
+        sessionCtx.BodyStripped = projected;
+      }
+    }
+  }
   const thinkingRuntime = resolveEffectiveAgentRuntime({
     cfg,
     provider,
@@ -631,9 +655,10 @@ export async function resolveReplyDirectives(params: {
       resolvedBlockStreamingBreak,
       provider,
       model,
-      requestedRouteResolution: effectiveModelDirective
-        ? "resolved"
-        : modelState.requestedRouteResolution,
+      requestedRouteResolution:
+        effectiveModelDirective || promotedProseModelCandidate
+          ? "resolved"
+          : modelState.requestedRouteResolution,
       modelState,
       contextTokens,
       inlineStatusRequested,

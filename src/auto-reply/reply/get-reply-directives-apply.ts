@@ -12,6 +12,7 @@ import {
 } from "../../sessions/model-overrides.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
+import type { ProseModelCandidate } from "../model.js";
 import type { MsgContext } from "../templating.js";
 import type { ElevatedLevel } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
@@ -114,6 +115,8 @@ type ApplyDirectiveResult =
       model: string;
       contextTokens: number;
       directiveAck?: ReplyPayload;
+      /** Set when the prose candidate was promoted; the caller must strip its span from the prompt text. */
+      promotedProseModelCandidate?: ProseModelCandidate;
       perMessageQueueMode?: InlineDirectives["queueMode"];
       perMessageQueueOptions?: {
         debounceMs?: number;
@@ -233,6 +236,7 @@ export async function applyInlineDirectiveOverrides(params: {
   });
 
   let directiveAck: ReplyPayload | undefined;
+  let promotedProseModelCandidate: ProseModelCandidate | undefined;
   let selectionCatalog = modelState.allowedModelCatalog;
 
   // Fire on the reason, not the boolean: a temporarily-unavailable override
@@ -277,7 +281,16 @@ export async function applyInlineDirectiveOverrides(params: {
       agentId,
       rawRuntime: candidate.directive.rawModelRuntime,
     });
-    if (candidateResolution.selection) {
+    const selection = candidateResolution.selection;
+    // Only promote when resolution names a real model: picker membership or a
+    // configured alias. Under an unrestricted policy the resolver's permitted
+    // fallback also constructs selections for synthetic refs, and those must
+    // stay prose instead of switching the session to a fabricated model.
+    const selectionNamed =
+      selection !== undefined &&
+      (selection.alias !== undefined ||
+        modelState.allowedModelKeys.has(modelKey(selection.provider, selection.model)));
+    if (selection && selectionNamed) {
       directives = {
         ...directives,
         ...candidate.directive,
@@ -286,6 +299,7 @@ export async function applyInlineDirectiveOverrides(params: {
         proseModelCandidate: undefined,
       };
       effectiveModelDirective = candidate.directive.rawModelDirective;
+      promotedProseModelCandidate = candidate;
     }
   }
 
@@ -643,6 +657,7 @@ export async function applyInlineDirectiveOverrides(params: {
     model,
     contextTokens,
     directiveAck,
+    ...(promotedProseModelCandidate ? { promotedProseModelCandidate } : {}),
     perMessageQueueMode,
     perMessageQueueOptions,
   };

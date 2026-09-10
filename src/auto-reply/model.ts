@@ -59,6 +59,26 @@ function hasAdditionalModelScope(body: string, match: RegExpMatchArray | null): 
   return new RegExp(String.raw`^\s+${MODEL_SCOPE_OPTION_PATTERN}`, "i").test(trailing);
 }
 
+/**
+ * A bare mid-message `/model <token>` the parser treated as prose. The parse
+ * layer has no model catalog access, so the candidate carries the full
+ * directive interpretation it would have had; the apply layer re-derives the
+ * prose/directive decision under the effective model policy (#137197).
+ */
+export type ProseModelCandidate = {
+  /** Original message body with the directive span still embedded. */
+  body: string;
+  /** The parse result as if the token had been accepted as a directive. */
+  directive: {
+    cleaned: string;
+    rawModelDirective: string;
+    rawModelProfile?: string;
+    rawModelRuntime?: string;
+    modelScope?: ModelSelectionScope;
+    modelScopeConflict: boolean;
+  };
+};
+
 /** Extract and remove a `/model` directive, including optional auth profile/runtime hints. */
 export function extractModelDirective(
   body?: string,
@@ -72,6 +92,7 @@ export function extractModelDirective(
   scopeConflict: boolean;
   hasDirective: boolean;
   source?: "alias" | "model";
+  proseModelCandidate?: ProseModelCandidate;
 } {
   if (!body) {
     return { cleaned: "", scopeConflict: false, hasDirective: false };
@@ -113,7 +134,9 @@ export function extractModelDirective(
   // a policy error that aborts the whole turn (#137197). Message-leading
   // directives keep the existing command behavior, including fuzzy matching,
   // and reserved tokens (list/status/default) keep their mixed-message
-  // contract.
+  // contract. Syntax alone cannot tell an unresolved prose word from a valid
+  // providerless selection, so the token stays prose here and rides along as a
+  // candidate the apply layer can promote when model resolution names a model.
   const isMessageLeading =
     match?.index !== undefined && body.slice(0, match.index).trim().length === 0;
   const reservedToken = RESERVED_MODEL_DIRECTIVE_TOKENS.has(rawModel?.toLowerCase() ?? "");
@@ -125,7 +148,26 @@ export function extractModelDirective(
     !aliases.some((alias) => alias.toLowerCase() === rawModel.toLowerCase()) &&
     !isMessageLeading
   ) {
-    return { cleaned: body, scopeConflict: false, hasDirective: false };
+    return {
+      cleaned: body,
+      scopeConflict: false,
+      hasDirective: false,
+      proseModelCandidate: {
+        body,
+        directive: {
+          cleaned: removeDirectiveSpan(
+            body,
+            modelMatch.index,
+            modelMatch.index + modelMatch[0].length,
+          ),
+          rawModelDirective: rawModel,
+          ...(rawProfile ? { rawModelProfile: rawProfile } : {}),
+          ...(rawRuntime ? { rawModelRuntime: rawRuntime } : {}),
+          ...(scope ? { modelScope: scope } : {}),
+          modelScopeConflict: hasAdditionalModelScope(body, modelMatch),
+        },
+      },
+    };
   }
 
   const cleaned = match

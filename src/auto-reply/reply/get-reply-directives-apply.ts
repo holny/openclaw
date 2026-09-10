@@ -25,6 +25,7 @@ import type { InlineDirectives } from "./directive-handling.parse.js";
 import { formatModelSelectionScopeAck } from "./directive-handling.shared.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { resolveContextTokens } from "./model-selection-context.js";
+import { resolveModelDirectiveSelection } from "./model-selection.js";
 import type { createModelSelectionState } from "./model-selection.js";
 import type { ReplyPreRunRejectionCode } from "./reply-operation-run-state.js";
 import type { TypingController } from "./typing.js";
@@ -194,8 +195,8 @@ export async function applyInlineDirectiveOverrides(params: {
     resolvedElevatedLevel,
     defaultActivation,
     typing,
-    effectiveModelDirective,
   } = params;
+  let effectiveModelDirective = params.effectiveModelDirective;
   const requesterProfileId = readSessionInputProfileId(ctx);
   let { directives } = params;
   let { provider, model } = params;
@@ -254,6 +255,38 @@ export async function applyInlineDirectiveOverrides(params: {
 
   if (!command.isAuthorizedSender) {
     directives = clearInlineDirectives(directives.cleaned);
+  }
+
+  // A bare mid-message `/model <token>` stays prose unless model resolution can
+  // actually name a model (exact picker membership, configured alias, or a
+  // fuzzy hit above the resolver threshold): the parse layer has no catalog
+  // access, so the prose/directive decision happens here under the effective
+  // model policy (#137197). Everything else flows to the model as ordinary
+  // text; qualified refs and aliases keep their directive behavior at parse
+  // time and are never candidates.
+  if (directives.proseModelCandidate && !directives.hasModelDirective) {
+    const candidate = directives.proseModelCandidate;
+    const candidateResolution = resolveModelDirectiveSelection({
+      raw: candidate.directive.rawModelDirective,
+      defaultProvider,
+      defaultModel,
+      aliasIndex,
+      allowedModelKeys: modelState.allowedModelKeys,
+      modelPolicy: modelState.modelPolicy,
+      cfg,
+      agentId,
+      rawRuntime: candidate.directive.rawModelRuntime,
+    });
+    if (candidateResolution.selection) {
+      directives = {
+        ...directives,
+        ...candidate.directive,
+        hasModelDirective: true,
+        modelDirectiveSource: "model",
+        proseModelCandidate: undefined,
+      };
+      effectiveModelDirective = candidate.directive.rawModelDirective;
+    }
   }
 
   // Derive the persistent write target from the directives that survived the

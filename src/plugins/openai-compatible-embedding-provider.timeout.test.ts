@@ -369,4 +369,74 @@ describe("openai-compatible embedding stall deadlines", () => {
     }
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(10_500);
   }, 20_000);
+
+  it("honors stallTimeoutSeconds as the query-lane stall deadline", async () => {
+    const server = await startNeverRespondingEmbeddingServer();
+    const provider = await createProvider(
+      createOptions({
+        config: {
+          models: {
+            providers: {
+              "slow-embeddings": {
+                baseUrl: server.baseUrl,
+                stallTimeoutSeconds: 2,
+                models: [],
+              },
+            },
+          },
+        } as EmbeddingProviderCreateOptions["config"],
+        provider: "slow-embeddings",
+        model: "text-embedding-bge-m3",
+      }),
+    );
+
+    const startedAt = Date.now();
+    const outcome = await withTestTimeout(
+      provider.embed("hello", { inputType: "query" }).then(
+        () => ({ type: "resolved" as const }),
+        (error: unknown) => ({ type: "rejected" as const, error }),
+      ),
+      5_000,
+      "timed out waiting for the configured stall deadline",
+    );
+    if (outcome.type !== "rejected") {
+      throw new Error(`expected embedding request to reject, got ${outcome.type}`);
+    }
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(2_000);
+    expect((outcome.error as Error).message).toBe(
+      "openai-compatible embeddings request timed out after 2s",
+    );
+    expect((outcome.error as Error).name).toBe(EMBEDDING_STALL_TIMEOUT_ERROR_NAME);
+  });
+
+  it("keeps labeled document batches outside the provider stall deadline even with stallTimeoutSeconds", async () => {
+    const server = await startDelayedEmbeddingServer(3_000);
+    const provider = await createProvider(
+      createOptions({
+        config: {
+          models: {
+            providers: {
+              "slow-embeddings": {
+                baseUrl: server.baseUrl,
+                stallTimeoutSeconds: 2,
+                models: [],
+              },
+            },
+          },
+        } as EmbeddingProviderCreateOptions["config"],
+        provider: "slow-embeddings",
+        model: "text-embedding-bge-m3",
+      }),
+    );
+
+    // The knob overrides the query-lane default only; indexing batches keep
+    // the Memory Core batch budget.
+    await expect(
+      withTestTimeout(
+        provider.embedBatch(["doc"], { inputType: "document" }),
+        6_000,
+        "timed out waiting for the delayed document batch",
+      ),
+    ).resolves.toEqual([[0.1, 0.2]]);
+  });
 });

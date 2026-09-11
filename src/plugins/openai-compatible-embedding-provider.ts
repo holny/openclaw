@@ -54,6 +54,7 @@ type OpenAICompatibleEmbeddingClient = {
   inputType?: string;
   queryInputType?: string;
   documentInputType?: string;
+  stallTimeoutMs?: number;
   localServiceTarget?: ConfiguredProviderLocalServiceTarget;
   acquireLocalService?: AcquireConfiguredProviderLocalService;
 };
@@ -63,6 +64,7 @@ type ConfiguredEmbeddingProvider = {
   baseUrl?: string;
   apiKey?: unknown;
   headers?: Record<string, unknown>;
+  stallTimeoutSeconds?: number;
   localService?: ModelProviderLocalServiceConfig;
 };
 
@@ -122,6 +124,18 @@ function normalizeDimensions(value: number | undefined): number | undefined {
 function normalizeOptionalInputType(value: string | undefined): string | undefined {
   const inputType = value?.trim();
   return inputType ? inputType : undefined;
+}
+
+function normalizeStallTimeoutMs(value: number | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(
+      "openai-compatible embeddings: stallTimeoutSeconds must be a positive number of seconds.",
+    );
+  }
+  return Math.round(value * 1000);
 }
 
 function resolveRequestInputType(
@@ -354,14 +368,16 @@ async function postEmbeddingRequest(params: {
     ...(inputType ? { input_type: inputType } : {}),
   };
   // Query-lane calls and unlabeled single-input calls (memory status probes,
-  // single-document recall) get the built-in stall deadline; labeled document
+  // single-document recall) get the stall deadline; labeled document
   // batches — including single-element ones — are indexing traffic and keep
-  // the caller's own batch bound. timeoutSeconds feeds the Memory Core
-  // embedding budgets instead of a provider-side request deadline (#136405).
-  const perCallTimeoutMs =
-    params.inputType === "query" || (params.inputType === undefined && input.length === 1)
-      ? DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS
-      : undefined;
+  // the caller's own batch bound. stallTimeoutSeconds replaces the query-lane
+  // default for slow providers; document batches keep the Memory Core batch
+  // budget regardless (#136405).
+  const boundedLane =
+    params.inputType === "query" || (params.inputType === undefined && input.length === 1);
+  const perCallTimeoutMs = boundedLane
+    ? (client.stallTimeoutMs ?? DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS)
+    : undefined;
   const timeoutSecondsLabel =
     perCallTimeoutMs === undefined ? undefined : Math.round(perCallTimeoutMs / 1000);
   // Readiness keeps its own budget: the search clock pauses through
@@ -457,6 +473,7 @@ async function createOpenAICompatibleEmbeddingClient(
   const inputType = normalizeOptionalInputType(options.inputType);
   const queryInputType = normalizeOptionalInputType(options.queryInputType);
   const documentInputType = normalizeOptionalInputType(options.documentInputType);
+  const stallTimeoutMs = normalizeStallTimeoutMs(configuredProvider?.stallTimeoutSeconds);
   const headers = buildHeaders({
     apiKey: resolveRemoteApiKey(options.remote?.apiKey),
     provider: providerOwnsDestination ? configuredProvider?.headers : undefined,
@@ -493,6 +510,7 @@ async function createOpenAICompatibleEmbeddingClient(
     ...(options.dimensions !== undefined
       ? { dimensions: normalizeDimensions(options.dimensions) }
       : {}),
+    ...(stallTimeoutMs !== undefined ? { stallTimeoutMs } : {}),
     ...(inputType ? { inputType } : {}),
     ...(queryInputType ? { queryInputType } : {}),
     ...(documentInputType ? { documentInputType } : {}),

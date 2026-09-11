@@ -234,7 +234,7 @@ describe("openai-compatible embedding stall deadlines", () => {
           providers: {
             "gpu-spark": {
               baseUrl: server.baseUrl,
-              timeoutSeconds: 1,
+              stallTimeoutSeconds: 1,
               localService: { command: process.execPath },
               models: [],
             },
@@ -249,8 +249,9 @@ describe("openai-compatible embedding stall deadlines", () => {
     options.acquireLocalService = acquireLocalService;
     const provider = await createProvider(options);
 
-    // A healthy 1.5s cold start outlasts the 1s transport deadline: readiness
-    // must not consume it, and the deadline starts only for the HTTP call.
+    // A healthy 1.5s cold start outlasts the effective 1s query stall
+    // deadline: readiness must not consume it, and the deadline starts only
+    // for the HTTP call.
     const startedAt = Date.now();
     await withTestTimeout(
       provider.embed("hello", { inputType: "query" }),
@@ -406,6 +407,79 @@ describe("openai-compatible embedding stall deadlines", () => {
     expect((outcome.error as Error).message).toBe(
       "openai-compatible embeddings request timed out after 2s",
     );
+    expect((outcome.error as Error).name).toBe(EMBEDDING_STALL_TIMEOUT_ERROR_NAME);
+  });
+
+  it("keeps the configured stall deadline scoped to the provider-owned destination", async () => {
+    // Provider A owns a stalled endpoint and carries a 2s stall deadline, but
+    // memory.search.remote.baseUrl sends traffic to a healthy endpoint that
+    // needs 3s — the knob must not cut that request off.
+    const stalledServer = await startNeverRespondingEmbeddingServer();
+    const healthyServer = await startDelayedEmbeddingServer(3_000);
+    const provider = await createProvider(
+      createOptions({
+        config: {
+          models: {
+            providers: {
+              "slow-embeddings": {
+                baseUrl: stalledServer.baseUrl,
+                stallTimeoutSeconds: 2,
+                models: [],
+              },
+            },
+          },
+        } as EmbeddingProviderCreateOptions["config"],
+        provider: "slow-embeddings",
+        model: "text-embedding-bge-m3",
+        remote: { baseUrl: healthyServer.baseUrl },
+      }),
+    );
+
+    const startedAt = Date.now();
+    await expect(
+      withTestTimeout(
+        provider.embed("hello", { inputType: "query" }),
+        6_000,
+        "timed out waiting for the healthy override endpoint",
+      ),
+    ).resolves.toEqual([0.1, 0.2]);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(2_000);
+  });
+
+  it("still honors stallTimeoutSeconds when remote.baseUrl matches the provider destination", async () => {
+    const server = await startNeverRespondingEmbeddingServer();
+    const provider = await createProvider(
+      createOptions({
+        config: {
+          models: {
+            providers: {
+              "slow-embeddings": {
+                baseUrl: server.baseUrl,
+                stallTimeoutSeconds: 2,
+                models: [],
+              },
+            },
+          },
+        } as EmbeddingProviderCreateOptions["config"],
+        provider: "slow-embeddings",
+        model: "text-embedding-bge-m3",
+        remote: { baseUrl: server.baseUrl },
+      }),
+    );
+
+    const startedAt = Date.now();
+    const outcome = await withTestTimeout(
+      provider.embed("hello", { inputType: "query" }).then(
+        () => ({ type: "resolved" as const }),
+        (error: unknown) => ({ type: "rejected" as const, error }),
+      ),
+      5_000,
+      "timed out waiting for the configured stall deadline",
+    );
+    if (outcome.type !== "rejected") {
+      throw new Error(`expected embedding request to reject, got ${outcome.type}`);
+    }
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(2_000);
     expect((outcome.error as Error).name).toBe(EMBEDDING_STALL_TIMEOUT_ERROR_NAME);
   });
 

@@ -473,7 +473,12 @@ async function createOpenAICompatibleEmbeddingClient(
   const inputType = normalizeOptionalInputType(options.inputType);
   const queryInputType = normalizeOptionalInputType(options.queryInputType);
   const documentInputType = normalizeOptionalInputType(options.documentInputType);
-  const stallTimeoutMs = normalizeStallTimeoutMs(configuredProvider?.stallTimeoutSeconds);
+  // The provider's stall deadline applies only when the provider owns the
+  // destination; a memory.search.remote.baseUrl override points requests at a
+  // different endpoint, so that endpoint keeps the default deadline (#136405).
+  const stallTimeoutMs = normalizeStallTimeoutMs(
+    providerOwnsDestination ? configuredProvider?.stallTimeoutSeconds : undefined,
+  );
   const headers = buildHeaders({
     apiKey: resolveRemoteApiKey(options.remote?.apiKey),
     provider: providerOwnsDestination ? configuredProvider?.headers : undefined,

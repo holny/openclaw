@@ -113,6 +113,7 @@ describe("memory index", () => {
       embedBatchWithRetry: (
         inputs: string[],
         generation?: unknown,
+        cacheCandidates?: unknown,
         opts?: { inputType?: "query" | "document" },
       ) => Promise<number[][]>;
     };

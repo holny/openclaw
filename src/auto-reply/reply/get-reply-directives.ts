@@ -542,14 +542,18 @@ export async function resolveReplyDirectives(params: {
   const promotedProseModelCandidate = applyResult.promotedProseModelCandidate;
   if (promotedProseModelCandidate) {
     // Promotion happened after routing already projected the sender-owned text:
-    // strip the accepted directive span from that same projection the way a
-    // parse-time acceptance would have, leaving supplemental context untouched.
-    const spanIndex = cleanedBody.indexOf(promotedProseModelCandidate.directiveSpan);
-    if (spanIndex >= 0) {
+    // strip the verified span at its recorded position inside the sender block.
+    // Never search the whole model-facing prompt — an identical earlier token in
+    // quoted history is not the sender's directive, and bodies routing kept
+    // opaque must not be scanned for occurrences (#137197).
+    const candidate = promotedProseModelCandidate;
+    const base = cleanedBody.indexOf(candidate.body);
+    const spanStart = base >= 0 ? base + candidate.spanIndex : -1;
+    if (spanStart >= 0 && cleanedBody.startsWith(candidate.directiveSpan, spanStart)) {
       const projected = removeDirectiveSpan(
         cleanedBody,
-        spanIndex,
-        spanIndex + promotedProseModelCandidate.directiveSpan.length,
+        spanStart,
+        spanStart + candidate.directiveSpan.length,
       );
       if (projected !== cleanedBody) {
         cleanedBody = projected;

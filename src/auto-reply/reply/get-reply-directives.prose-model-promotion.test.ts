@@ -71,6 +71,10 @@ async function runDirectives(params: {
   defaultProvider: string;
   defaultModel: string;
   preparedModelCatalog: ModelCatalogSnapshot;
+  /** Overrides the sender-command text the routing layer sees, distinct from the full body. */
+  commandText?: string;
+  /** Channel-identified sender span (`ChannelContext.chat.commandSourceText`). */
+  commandSourceText?: string;
 }) {
   const sessionEntry = makeSessionEntry();
   const sessionKey = "agent:main:whatsapp:+2000";
@@ -80,16 +84,21 @@ async function runDirectives(params: {
     BodyStripped: params.body,
     BodyForAgent: params.body,
     CommandBody: params.body,
-    commandText: params.body,
+    commandText: params.commandText ?? params.body,
     agentText: params.body,
     rawText: params.body,
     Provider: "whatsapp",
   } as Parameters<typeof resolveReplyDirectives>[0]["sessionCtx"];
+  const channelContext = params.commandSourceText
+    ? { chat: { commandSourceText: params.commandSourceText } }
+    : undefined;
   const result = await resolveReplyDirectives({
     ctx: buildTestCtx({
       Body: params.body,
       CommandBody: params.body,
       CommandAuthorized: true,
+      ...(channelContext ? { ChannelContext: channelContext } : {}),
+      ...(params.commandText ? { rawText: params.body } : {}),
     }),
     cfg: params.cfg,
     agentId: "main",
@@ -106,6 +115,8 @@ async function runDirectives(params: {
         Body: params.body,
         CommandBody: params.body,
         CommandAuthorized: true,
+        ...(channelContext ? { ChannelContext: channelContext } : {}),
+        ...(params.commandText ? { rawText: params.body } : {}),
       }),
       sessionEntry,
     }),
@@ -207,5 +218,40 @@ describe("prose model candidate promotion through reply directives", () => {
     });
     expect(result).not.toHaveProperty("directiveAck");
     expect(sessionEntry).toEqual(createSessionEntry());
+  });
+
+  it("strips the sender's promoted span from an opaque body without touching earlier history", async () => {
+    // Quoted history mentions the same token before the sender block; the body
+    // is non-leading, so routing keeps it opaque. Promotion must remove the
+    // sender's own verified span, never the first matching occurrence in the
+    // model-facing prompt (#137197).
+    const senderText = "please switch /model gpt-4o now";
+    const body = `earlier quoted /model gpt-4o line\n${senderText}`;
+    const { result, sessionCtx, sessionEntry } = await runDirectives({
+      body,
+      cfg: makeCfg("anthropic/claude-opus-4-6"),
+      defaultProvider: "anthropic",
+      defaultModel: "claude-opus-4-6",
+      preparedModelCatalog: catalog([
+        { provider: "anthropic", id: "claude-opus-4-6", name: "Claude Opus 4.6" },
+        { provider: "openai", id: "gpt-4o", name: "GPT-4o" },
+      ]),
+      commandText: senderText,
+      commandSourceText: senderText,
+    });
+
+    expect(result.kind).toBe("continue");
+    if (result.kind !== "continue") {
+      throw new Error("expected the promoted candidate to continue the turn");
+    }
+    expect(result.result.provider).toBe("openai");
+    expect(result.result.model).toBe("gpt-4o");
+    // The quoted history line keeps its token; only the sender's span leaves.
+    const projected = "earlier quoted /model gpt-4o line\nplease switch now";
+    expect(result.result.cleanedBody).toBe(projected);
+    expect(sessionCtx.agentText).toBe(projected);
+    expect(sessionCtx.BodyForAgent).toBe(projected);
+    expect(sessionCtx.BodyStripped).toBe(projected);
+    expect(sessionEntry.modelOverride).toBe("gpt-4o");
   });
 });

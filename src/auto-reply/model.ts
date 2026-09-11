@@ -79,6 +79,8 @@ export type ProseModelCandidate = {
   };
   /** The exact matched directive span; promotion removes it from the routed prompt text. */
   directiveSpan: string;
+  /** Position of the span within `body`, recorded by the parser that verified the match. */
+  spanIndex: number;
 };
 
 /** Extract and remove a `/model` directive, including optional auth profile/runtime hints. */
@@ -169,6 +171,7 @@ export function extractModelDirective(
           modelScopeConflict: hasAdditionalModelScope(body, modelMatch),
         },
         directiveSpan: modelMatch[0],
+        spanIndex: modelMatch.index,
       },
     };
   }

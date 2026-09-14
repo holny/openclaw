@@ -17,6 +17,7 @@ export function isEmbeddingStallTimeoutError(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&
+    // SAFETY: property read on a checked object, not a capability assumption.
     (error as { name?: unknown }).name === EMBEDDING_STALL_TIMEOUT_ERROR_NAME
   );
 }

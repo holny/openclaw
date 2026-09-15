@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 function createMonitor(queue: ChannelIngressQueue<StoredEvent>) {
-  return createChannelIngressMonitor<RawEvent, string, StoredEvent, unknown>({
+  return createChannelIngressMonitor<RawEvent, string, StoredEvent>({
     queue,
     inspect: (raw) => ({ eventId: raw.id, laneKey: `lane:${raw.lane}` }),
     payload: {

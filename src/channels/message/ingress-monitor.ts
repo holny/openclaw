@@ -678,11 +678,14 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
     },
     start: () => {
       // A stopped monitor is single-use: its shutdown controller and drain owner are
-      // spent, so re-arming is impossible. Throw instead of silently returning, or a
-      // caller that restarts a channel around a stopped instance would keep a live
-      // transport routing events into a permanently dead ingress (#148793).
+      // spent, so re-arming is impossible. Fail with the typed ingress-unavailable
+      // marker instead of returning silently: the Gateway classifies that code as dead
+      // inbound, so a restart around a spent instance reaches operator status instead of
+      // routing live transport events into a dead ingress (#148793).
       if (stopped) {
-        throw createStoppedError();
+        throw new ChannelIngressUnavailableError(
+          "Channel ingress monitor is stopped; a restarted channel needs a new monitor.",
+        );
       }
       if (running || isAborted()) {
         return;

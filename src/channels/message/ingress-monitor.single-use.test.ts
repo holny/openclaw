@@ -3,6 +3,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createChannelIngressMonitor } from "./ingress-monitor.js";
 import { createChannelIngressQueue, type ChannelIngressQueue } from "./ingress-queue.js";
+import { ChannelIngressUnavailableError } from "./ingress-unavailable.js";
 
 type RawEvent = { id: string; lane: string; text: string };
 type StoredEvent = { version: 1; rawEvent: string };
@@ -52,6 +53,7 @@ describe("channel ingress monitor single-use contract", () => {
       monitor.start();
       await monitor.stop();
 
+      expect(() => monitor.start()).toThrowError(ChannelIngressUnavailableError);
       expect(() => monitor.start()).toThrowError(/stopped/i);
       expect(monitor.isStopped()).toBe(true);
       await expect(monitor.admit({ id: "after-stop", lane: "a", text: "hello" })).rejects.toThrow(

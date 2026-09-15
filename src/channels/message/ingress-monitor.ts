@@ -677,7 +677,14 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
       }
     },
     start: () => {
-      if (running || stopped || isAborted()) {
+      // A stopped monitor is single-use: its shutdown controller and drain owner are
+      // spent, so re-arming is impossible. Throw instead of silently returning, or a
+      // caller that restarts a channel around a stopped instance would keep a live
+      // transport routing events into a permanently dead ingress (#148793).
+      if (stopped) {
+        throw createStoppedError();
+      }
+      if (running || isAborted()) {
         return;
       }
       // Open the durable queue before arming the poll timer. A monitor without a queue can

@@ -1,6 +1,5 @@
 import { defaultRuntime } from "../../runtime.js";
 import { shortenHomePath } from "../../utils.js";
-import { formatCliCommand } from "../command-format.js";
 import type { createCliStatusTextStyles } from "./shared.js";
 import type { DaemonStatus } from "./status.gather.js";
 
@@ -18,6 +17,7 @@ export function printDaemonStatusVersions(
     infoText,
     warnText,
   }: Pick<ReturnType<typeof createCliStatusTextStyles>, "label" | "infoText" | "warnText">,
+  reinstallGuidance: string,
 ) {
   const gatewayVersion = status.rpc?.server?.version?.trim() || status.gateway?.version?.trim();
   const cliVersionLine = formatCliVersionLine(status.cli);
@@ -54,7 +54,9 @@ export function printDaemonStatusVersions(
       defaultRuntime.log(`${label("CLI version:")} ${infoText(cliVersionLine)}`);
     }
     defaultRuntime.log(`${label("Gateway service version:")} ${infoText(serviceInstallLine)}`);
+    defaultRuntime.log(infoText("The Gateway did not report its own version."));
     if (
+      status.service.targetRole !== "diagnostic-only" &&
       status.cli?.version &&
       serviceInstallVersion &&
       status.cli.version !== serviceInstallVersion
@@ -64,11 +66,7 @@ export function printDaemonStatusVersions(
           `Warning: this OpenClaw command is version ${status.cli.version}, but the installed Gateway service is version ${serviceInstallVersion}.`,
         ),
       );
-      defaultRuntime.error(
-        warnText(
-          `The Gateway did not report its own version, so the running process may come from a different install than this command. Compare the service entrypoint with \`which openclaw\`, then reinstall the service from the install you want with \`${formatCliCommand("openclaw gateway install --force")}\`.`,
-        ),
-      );
+      defaultRuntime.error(warnText(reinstallGuidance));
     }
     defaultRuntime.log("");
   }

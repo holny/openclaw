@@ -248,7 +248,12 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     spacer();
   }
 
-  printDaemonStatusVersions(status, { label, infoText, warnText });
+  printDaemonStatusVersions(
+    status,
+    { label, infoText, warnText },
+    installBlock ??
+      `Compare the service entrypoint with \`which openclaw\`, then reinstall the service from the install you want with \`${reinstallCommand}\`.`,
+  );
 
   const runtimeLine = formatRuntimeStatus(
     service.inspectionReason ? { ...service.runtime, detail: undefined } : service.runtime,

@@ -130,7 +130,7 @@ describe("daemon status version reporting", () => {
     expect(output).toContain("Gateway service version: 2026.4.15");
     expect(output).toContain(".npm-global/lib/node_modules/openclaw");
     expect(output).toContain("the installed Gateway service is version 2026.4.15");
-    expect(output).toContain("gateway install");
+    expect(output).toContain("The Gateway did not report its own version");
   });
 
   it("does not warn about the service install when it matches the CLI version", () => {

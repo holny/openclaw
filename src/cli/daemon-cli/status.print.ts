@@ -256,6 +256,14 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
 
   const gatewayVersion = rpc?.server?.version?.trim() || status.gateway?.version?.trim();
   const cliVersionLine = formatCliVersionLine(status.cli);
+  // The installed service is readable without a Gateway handshake, so its facts stay
+  // available for the failed-probe path below.
+  const serviceInstallVersion = status.service.layout?.packageVersion?.trim();
+  const serviceInstallLine = serviceInstallVersion
+    ? status.service.layout?.packageRoot
+      ? `${serviceInstallVersion} (${shortenHomePath(status.service.layout.packageRoot)})`
+      : serviceInstallVersion
+    : null;
   if (gatewayVersion) {
     if (cliVersionLine) {
       defaultRuntime.log(`${label("CLI version:")} ${infoText(cliVersionLine)}`);
@@ -270,6 +278,30 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
       defaultRuntime.error(
         warnText(
           "Check `openclaw --version`, `which openclaw`, and `openclaw gateway status --deep`; if this mismatch is unexpected, update PATH so `openclaw` points to the version you want, or reinstall the Gateway service from that same OpenClaw install.",
+        ),
+      );
+    }
+    spacer();
+  } else if (serviceInstallLine) {
+    // No Gateway version came back (failed or skipped probe). Report the install the
+    // service points at so a stale service behind a bare connect error stays visible.
+    if (cliVersionLine) {
+      defaultRuntime.log(`${label("CLI version:")} ${infoText(cliVersionLine)}`);
+    }
+    defaultRuntime.log(`${label("Gateway service version:")} ${infoText(serviceInstallLine)}`);
+    if (
+      status.cli?.version &&
+      serviceInstallVersion &&
+      status.cli.version !== serviceInstallVersion
+    ) {
+      defaultRuntime.error(
+        warnText(
+          `Warning: this OpenClaw command is version ${status.cli.version}, but the installed Gateway service is version ${serviceInstallVersion}.`,
+        ),
+      );
+      defaultRuntime.error(
+        warnText(
+          `The Gateway did not report its own version, so the running process may come from a different install than this command. Compare the service entrypoint with \`which openclaw\`, then reinstall the service from the install you want with \`${formatCliCommand("openclaw gateway install --force")}\`.`,
         ),
       );
     }

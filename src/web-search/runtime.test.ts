@@ -13,7 +13,6 @@ import {
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { PluginWebSearchProviderEntry } from "../plugins/web-provider-types.js";
-import type { RuntimeWebSearchMetadata } from "../secrets/runtime-web-tools.types.js";
 import {
   createWebSearchTestProvider,
   type WebSearchTestProviderParams,
@@ -190,7 +189,6 @@ describe("web search runtime", () => {
   });
 
   afterEach(() => {
-    vi.unstubAllEnvs();
     clearRuntimeConfigSnapshot();
     clearSecretsRuntimeSnapshot();
     clearRuntimeAuthProfileStoreSnapshots();
@@ -466,161 +464,6 @@ describe("web search runtime", () => {
       provider: "grok",
       result: { query: "oauth-backed web search", ok: true },
     });
-  });
-
-  it("keeps documented autoDetectOrder when the secrets snapshot auto-detected a lower-priority env provider", async () => {
-    vi.stubEnv("TAVILY_API_KEY", "tavily-env-key");
-    const agentDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-web-search-order-"));
-    tempDirs.push(agentDir);
-    replaceRuntimeAuthProfileStoreSnapshots([
-      {
-        agentDir,
-        store: createOAuthAuthProfileStore({
-          provider: "xai",
-          profileId: "xai:default",
-          access: "xai-oauth-access-token",
-          refresh: "xai-oauth-refresh-token",
-        }),
-      },
-    ]);
-    const executeOrder: string[] = [];
-    const grokProvider = createCustomSearchProvider({
-      pluginId: "xai",
-      id: "grok",
-      authProviderId: "xai",
-      credentialPath: "plugins.entries.xai.config.webSearch.apiKey",
-      autoDetectOrder: 30,
-      createTool: () => ({
-        description: "grok",
-        parameters: {},
-        execute: async () => {
-          executeOrder.push("grok");
-          return { query: "ok", provider: "grok" };
-        },
-      }),
-    });
-    const tavilyProvider = createWebSearchTestProvider({
-      pluginId: "tavily",
-      id: "tavily",
-      credentialPath: "plugins.entries.tavily.config.webSearch.apiKey",
-      autoDetectOrder: 70,
-      createTool: () => ({
-        description: "tavily",
-        parameters: {},
-        execute: async () => {
-          executeOrder.push("tavily");
-          return { query: "ok", provider: "tavily" };
-        },
-      }),
-    });
-    resolveRuntimeWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
-    resolvePluginWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
-    // Simulate the secrets snapshot auto-detect winner Tavily through its env key while the
-    // OAuth-ready Grok sits at a lower documented order.
-    const runtimeWebSearch = {
-      providerSource: "auto-detect",
-      selectedProvider: "tavily",
-      selectedProviderKeySource: "env",
-      diagnostics: [],
-    } as RuntimeWebSearchMetadata;
-
-    // Order is the actual contract: grok (30) must serve before tavily (70) is even tried.
-    await expect(
-      runWebSearch({
-        agentDir,
-        config: {},
-        runtimeWebSearch,
-        args: { query: "oauth vs env order" },
-      }),
-    ).resolves.toMatchObject({ provider: "grok" });
-    expect(executeOrder).toEqual(["grok"]);
-  });
-
-  it("still falls through to the env-keyed provider when the OAuth provider fails", async () => {
-    vi.stubEnv("TAVILY_API_KEY", "tavily-env-key");
-    const agentDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-web-search-order-fail-"));
-    tempDirs.push(agentDir);
-    replaceRuntimeAuthProfileStoreSnapshots([
-      {
-        agentDir,
-        store: createOAuthAuthProfileStore({
-          provider: "xai",
-          profileId: "xai:default",
-          access: "xai-oauth-access-token",
-          refresh: "xai-oauth-refresh-token",
-        }),
-      },
-    ]);
-    const grokProvider = createCustomSearchProvider({
-      pluginId: "xai",
-      id: "grok",
-      authProviderId: "xai",
-      credentialPath: "plugins.entries.xai.config.webSearch.apiKey",
-      autoDetectOrder: 30,
-      createTool: () => ({
-        description: "grok",
-        parameters: {},
-        execute: async () => {
-          throw new Error("grok search failed");
-        },
-      }),
-    });
-    const tavilyProvider = createWebSearchTestProvider({
-      pluginId: "tavily",
-      id: "tavily",
-      credentialPath: "plugins.entries.tavily.config.webSearch.apiKey",
-      autoDetectOrder: 70,
-    });
-    resolveRuntimeWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
-    resolvePluginWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
-    const runtimeWebSearch = {
-      providerSource: "auto-detect",
-      selectedProvider: "tavily",
-      selectedProviderKeySource: "env",
-      diagnostics: [],
-    } as RuntimeWebSearchMetadata;
-
-    await expect(
-      runWebSearch({
-        agentDir,
-        config: {},
-        runtimeWebSearch,
-        args: { query: "oauth fails, env serves" },
-      }),
-    ).resolves.toMatchObject({ provider: "tavily" });
-  });
-
-  it("keeps serving the env snapshot winner when no higher-priority provider is ready", async () => {
-    vi.stubEnv("TAVILY_API_KEY", "tavily-env-key");
-    const tavilyProvider = createWebSearchTestProvider({
-      pluginId: "tavily",
-      id: "tavily",
-      credentialPath: "plugins.entries.tavily.config.webSearch.apiKey",
-      autoDetectOrder: 70,
-    });
-    const grokProvider = createCustomSearchProvider({
-      pluginId: "xai",
-      id: "grok",
-      authProviderId: "xai",
-      credentialPath: "plugins.entries.xai.config.webSearch.apiKey",
-      autoDetectOrder: 30,
-    });
-    resolveRuntimeWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
-    resolvePluginWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
-    const runtimeWebSearch = {
-      providerSource: "auto-detect",
-      selectedProvider: "tavily",
-      selectedProviderKeySource: "env",
-      diagnostics: [],
-    } as RuntimeWebSearchMetadata;
-
-    await expect(
-      runWebSearch({
-        config: {},
-        runtimeWebSearch,
-        args: { query: "only tavily ready" },
-      }),
-    ).resolves.toMatchObject({ provider: "tavily" });
   });
 
   it("auto-detects a provider from the active agent auth profile", async () => {

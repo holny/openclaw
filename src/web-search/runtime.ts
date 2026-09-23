@@ -242,10 +242,8 @@ function resolveRuntimePreferredWebSearchProviderId(params: {
   ) {
     return undefined;
   }
-  // An env-keyed auto-detect winner must not lead the candidate order: the secrets
-  // snapshot cannot see OAuth profiles (env is the only channel it resolves), so an
-  // OAuth-profile-ready provider with a lower documented autoDetectOrder would never
-  // be tried (#155956). The snapshot id still stays in the implicit fallback list.
+  // The secrets snapshot cannot see OAuth profiles. Let the credential-aware
+  // order choose ahead of its env-keyed winner, which remains eligible for fallback.
   if (params.runtimeWebSearch?.selectedProviderKeySource === "env") {
     return undefined;
   }

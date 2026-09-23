@@ -469,6 +469,7 @@ describe("web search runtime", () => {
   });
 
   it("keeps documented autoDetectOrder when the secrets snapshot auto-detected a lower-priority env provider", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "tavily-env-key");
     const agentDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-web-search-order-"));
     tempDirs.push(agentDir);
     replaceRuntimeAuthProfileStoreSnapshots([
@@ -482,19 +483,35 @@ describe("web search runtime", () => {
         }),
       },
     ]);
+    const executeOrder: string[] = [];
     const grokProvider = createCustomSearchProvider({
       pluginId: "xai",
       id: "grok",
       authProviderId: "xai",
       credentialPath: "plugins.entries.xai.config.webSearch.apiKey",
       autoDetectOrder: 30,
+      createTool: () => ({
+        description: "grok",
+        parameters: {},
+        execute: async () => {
+          executeOrder.push("grok");
+          return { query: "ok", provider: "grok" };
+        },
+      }),
     });
     const tavilyProvider = createWebSearchTestProvider({
       pluginId: "tavily",
       id: "tavily",
       credentialPath: "plugins.entries.tavily.config.webSearch.apiKey",
-      envVars: ["TAVILY_API_KEY"],
       autoDetectOrder: 70,
+      createTool: () => ({
+        description: "tavily",
+        parameters: {},
+        execute: async () => {
+          executeOrder.push("tavily");
+          return { query: "ok", provider: "tavily" };
+        },
+      }),
     });
     resolveRuntimeWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
     resolvePluginWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
@@ -507,6 +524,7 @@ describe("web search runtime", () => {
       diagnostics: [],
     } as RuntimeWebSearchMetadata;
 
+    // Order is the actual contract: grok (30) must serve before tavily (70) is even tried.
     await expect(
       runWebSearch({
         agentDir,
@@ -515,6 +533,7 @@ describe("web search runtime", () => {
         args: { query: "oauth vs env order" },
       }),
     ).resolves.toMatchObject({ provider: "grok" });
+    expect(executeOrder).toEqual(["grok"]);
   });
 
   it("still falls through to the env-keyed provider when the OAuth provider fails", async () => {
@@ -550,7 +569,6 @@ describe("web search runtime", () => {
       pluginId: "tavily",
       id: "tavily",
       credentialPath: "plugins.entries.tavily.config.webSearch.apiKey",
-      envVars: ["TAVILY_API_KEY"],
       autoDetectOrder: 70,
     });
     resolveRuntimeWebSearchProvidersMock.mockReturnValue([grokProvider, tavilyProvider]);
@@ -578,7 +596,6 @@ describe("web search runtime", () => {
       pluginId: "tavily",
       id: "tavily",
       credentialPath: "plugins.entries.tavily.config.webSearch.apiKey",
-      envVars: ["TAVILY_API_KEY"],
       autoDetectOrder: 70,
     });
     const grokProvider = createCustomSearchProvider({

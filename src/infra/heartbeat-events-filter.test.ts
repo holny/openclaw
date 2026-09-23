@@ -181,8 +181,31 @@ describe("heartbeat event classification", () => {
       value: "Exec failed (abc12345, signal SIGKILL, run f1a2b3c4) :: killed output",
       expected: true,
     },
+    // Client-chosen run ids accept any nonempty string (underscores, punctuation).
+    { value: "Exec completed (abc12345, code 7, run request_123)", expected: true },
+    { value: "Exec failed (abc12345, signal SIGKILL, run run_client/2) :: killed", expected: true },
   ])("classifies relayable exec completion events for %j", ({ value, expected }) => {
     expect(isRelayableExecCompletionEvent(value)).toBe(expected);
+  });
+
+  it("also carries the run id into missing-output completion prompts", () => {
+    // Missing-output failures extract the run id explicitly if the queued event had it.
+    const result = buildExecEventPrompt(["Exec completed (abc12345, code 7, run request_123)"]);
+
+    expect(result).toContain(
+      "Exec completed (abc12345, code 7, run request_123) without captured stdout/stderr.",
+    );
+  });
+
+  it("signals stay their own token when the run segment is present", () => {
+    const result = buildExecEventPrompt([
+      "Exec failed (abc12345, signal SIGKILL, run f1a2b3c4) :: killed output",
+    ]);
+
+    // The raw string (with output) is retained; no signal/run leakage into either field.
+    expect(result).toContain(
+      "Exec failed (abc12345, signal SIGKILL, run f1a2b3c4) :: killed output",
+    );
   });
 
   it("captures the run segment from run-correlated exec completion events", () => {

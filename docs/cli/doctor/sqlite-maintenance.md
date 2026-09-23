@@ -67,10 +67,12 @@ compatible backup or upgrade OpenClaw for a newer schema.
 ## Session SQLite migration
 
 Runtime session rows and transcripts live in SQLite, by default at
-`~/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite`. Gateway and local
-CLI startup do not import, restore, or rewrite legacy session JSON/JSONL files.
-When startup finds a legacy session store, it refuses readiness and prints a
-`doctor --fix` command for the active profile instead of serving empty history.
+`~/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite`. Gateway startup uses
+Doctor's exclusive maintenance owner to migrate legacy session JSON/JSONL files
+before checking readiness. Runtime reads use only canonical SQLite state.
+An unreadable legacy session index stays at its original path with its transcripts,
+so repeated startups refuse readiness and print the active profile's
+`doctor --fix` command until the source is repaired.
 
 To upgrade history from an older file-backed installation, stop the Gateway
 (`openclaw gateway stop`), back up its state (`openclaw backup create --verify`),
@@ -152,6 +154,16 @@ protected, and completed recovery is recorded so later runs do not resurrect
 history explicitly deleted by the user. Diagnostic trajectory envelopes, deleted
 artifacts, unsupported files, conflicting identities, and ambiguous ownership are
 not converted into conversations. Deferred files remain available for recovery.
+
+Repeated imports can leave multiple archived copies of one primary transcript.
+Doctor treats copies of the same original path with the same verified size and
+SHA-256 as one historical claim. It keeps one verified original and retires identical duplicates through
+the existing recovery receipts, updating every retained
+manifest. `--session-sqlite recover` also settles these archives even when the
+latest failed run moved no files. Copies with different bytes stay protected and
+are named in the warning; retained historical conflicts do not block update's
+post-session plugin repair. Preserve the originals and migration manifests while
+resolving those conflicts, then rerun `openclaw doctor --fix`.
 
 ### Changed archived registry
 

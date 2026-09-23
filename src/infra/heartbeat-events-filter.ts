@@ -10,13 +10,14 @@ import { HEARTBEAT_TOKEN, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 const MAX_EXEC_EVENT_PROMPT_CHARS = 8_000;
 export const HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX = "heartbeat-delivery:";
 const STRUCTURED_EXEC_COMPLETION_EVENT_RE =
-  /^exec (completed|failed) \(([a-z0-9_-]{1,64}), (code -?\d+|signal [^)]+)\)(?: :: ([\s\S]*))?$/i;
+  /^exec (completed|failed) \(([a-z0-9_-]{1,64}), (code -?\d+|signal [^)]+)(?:, run ([a-z0-9-]{1,64}))?\)(?: :: ([\s\S]*))?$/i;
 
 type StructuredExecCompletionEvent = {
   raw: string;
   action: string;
   id: string;
   result: string;
+  runId?: string;
   output: string;
   succeeded: boolean;
 };
@@ -34,7 +35,8 @@ function parseStructuredExecCompletionEvent(evt: string): StructuredExecCompleti
     action,
     id: match[2] ?? "",
     result,
-    output: (match[4] ?? "").trim(),
+    runId: match[4] || undefined,
+    output: (match[5] ?? "").trim(),
     succeeded: action.toLowerCase() === "completed" && result.toLowerCase() === "code 0",
   };
 }

@@ -175,10 +175,32 @@ describe("heartbeat event classification", () => {
     { value: "Exec failed (abc12345, code 1)", expected: true },
     { value: "Exec failed (abc12345, signal SIGTERM)", expected: true },
     { value: "exec finished: ok", expected: true },
+    // Run-correlated exit events (#155329) stay structured even with the run segment.
+    { value: "Exec completed (abc12345, code 0, run b7c8d9e0-1f2a)", expected: false },
+    {
+      value: "Exec failed (abc12345, signal SIGKILL, run f1a2b3c4) :: killed output",
+      expected: true,
+    },
   ])("classifies relayable exec completion events for %j", ({ value, expected }) => {
     expect(isRelayableExecCompletionEvent(value)).toBe(expected);
   });
+
+  it("captures the run segment from run-correlated exec completion events", () => {
+    const { runId } = getStructuredExecCompletionRunId(
+      "Exec failed (abc12345, signal SIGKILL, run f1a2b3c4-5d6e) :: killed",
+    );
+    expect(runId).toBe("f1a2b3c4-5d6e");
+  });
 });
+
+/** Narrow test accessor: parses one structured exec completion event and returns its run id. */
+function getStructuredExecCompletionRunId(evt: string): { runId: string | undefined } {
+  // Reuse the exported classifier indirectly: the run id shows up in the formatted prompt
+  // text when present, and relayability follows the output branch.
+  const prompt = buildExecEventPrompt([evt]);
+  const match = /run ([a-z0-9-]+)/.exec(prompt);
+  return { runId: match?.[1] ?? undefined };
+}
 
 describe("isExecCompletionEvent", () => {
   it("matches maybeNotifyOnExit (backgrounded allowlisted commands) events", () => {

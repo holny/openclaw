@@ -5,7 +5,10 @@ import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-run
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { filterConsolidationCandidates } from "./dreaming-consolidation-candidates.js";
-import { applyMemoryConsolidationPlan } from "./dreaming-consolidation.js";
+import {
+  applyMemoryConsolidationPlan,
+  buildCandidateResultEntry,
+} from "./dreaming-consolidation.js";
 import {
   configureMemoryCoreDreamingState,
   DREAMING_MEMORY_BACKUP_NAMESPACE,
@@ -307,7 +310,9 @@ describe("memory consolidation", () => {
       nowMs: Date.parse("2026-07-02T10:00:00.000Z"),
       logger,
     });
-    expect(plan?.operations[0]?.resultEntry).toBe(resultEntryFor(promoted, "This visible mem"));
+    // The cut lands on a word boundary with a visible ellipsis rather than
+    // mid-word (#157152): "This visible mem" was the old raw-truncation shape.
+    expect(plan?.operations[0]?.resultEntry).toBe(resultEntryFor(promoted, "This visible..."));
   });
 
   it.each([
@@ -975,5 +980,27 @@ describe("memory consolidation", () => {
       "2026-07-02T10:00:00.000Z",
     );
     expect(recallStore.updatedAt).toBe("2026-07-03T10:00:00.000Z");
+  });
+});
+
+describe("buildCandidateResultEntry snippet truncation (#157152)", () => {
+  it("cuts a promoted candidate at a boundary with a visible ellipsis", () => {
+    const prompt = candidate("owner");
+    prompt.snippet = "alpha ".repeat(106) + "SUPERCALIFRAGILISTIC";
+
+    const entry = buildCandidateResultEntry(prompt, 160);
+    const [, text] = /^- (\S.*?)( Source: |$)/.exec(entry) ?? [];
+
+    expect(text).toBeDefined();
+    expect(text ?? "").not.toMatch(/\bSUPE(?!RAL)/);
+    expect(text ?? "").toContain("...");
+    expect(entry).toContain("Source:");
+  });
+
+  it("leaves short candidates untouched", () => {
+    const prompt = candidate("owner");
+    const entry = buildCandidateResultEntry(prompt, 160);
+
+    expect(entry).toBe(resultEntryFor(prompt));
   });
 });

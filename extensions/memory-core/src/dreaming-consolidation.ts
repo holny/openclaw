@@ -9,6 +9,7 @@ import type { MemoryConsolidationResult } from "./dreaming-consolidation-artifac
 import { filterConsolidationCandidates } from "./dreaming-consolidation-candidates.js";
 import type { DreamingCompletion } from "./dreaming-narrative.js";
 import { DEFAULT_MEMORY_FILE_MAX_CHARS } from "./memory-budget.js";
+import { formatPromotedSnippetForMemory } from "./promoted-snippet-truncate.js";
 import { buildPromotionMarker } from "./short-term-promotion-memory-write.js";
 import {
   buildPromotionRecallAnnotations,
@@ -51,18 +52,13 @@ function candidateSourceRef(candidate: PromotionCandidate): string {
   return `${candidate.path}#L${candidate.startLine}-L${candidate.endLine}`;
 }
 
-function buildCandidateResultEntry(
+export function buildCandidateResultEntry(
   candidate: PromotionCandidate,
   maxPromotedSnippetTokens: number,
 ): string {
-  const maxSnippetChars = maxPromotedSnippetTokens * PROMOTED_SNIPPET_CHARS_PER_TOKEN_ESTIMATE;
-  const snippet = truncateUtf16Safe(
-    candidate.snippet
-      .replace(/^[-*+]\s+/u, "")
-      .replace(/\s+/gu, " ")
-      .trim(),
-    maxSnippetChars,
-  ).trimEnd();
+  // Boundary-aware cut with a visible ellipsis, matching the short-term append
+  // path so a persisted promoted entry never ends mid-word (#157152).
+  const snippet = formatPromotedSnippetForMemory(candidate.snippet, maxPromotedSnippetTokens);
   return `- ${snippet} Source: ${candidateSourceRef(candidate)} ${buildPromotionRecallAnnotations(candidate)}`;
 }
 

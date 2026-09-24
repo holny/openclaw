@@ -29,6 +29,7 @@ import {
   createConfiguredOllamaStreamFn,
   createOllamaStreamFn,
   convertToOllamaMessages,
+  extractOllamaTools,
   buildAssistantMessage,
   parseNdjsonStream,
   resolveOllamaBaseUrlForRun,
@@ -4199,3 +4200,55 @@ describe("createConfiguredOllamaStreamFn", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+describe("extractOllamaTools tool schema normalization (#157039)", () => {
+  it("keeps free-form object schemas without injecting an empty properties map", () => {
+    const tools = [
+      {
+        name: "tool_call",
+        description: "Call a tool",
+        parameters: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            args: { type: "object", additionalProperties: true },
+          },
+          required: ["id", "args"],
+        },
+      },
+    ] as never;
+    const [result] = extractOllamaTools(tools);
+    const parameters = result.function.parameters as Record<string, unknown>;
+    const args = (parameters.properties as Record<string, unknown>).args as Record<string, unknown>;
+    expect(args.additionalProperties).toBe(true);
+    expect("properties" in args).toBe(false);
+  });
+
+  it("keeps the empty properties default on the root parameters object", () => {
+    const tools = [{ name: "flat_tool", description: "No parameters", parameters: {} }] as never;
+    const [result] = extractOllamaTools(tools);
+    expect(result.function.parameters).toEqual({ type: "object", properties: {} });
+  });
+
+  it("still injects an empty properties map into strict nested objects", () => {
+    const tools = [
+      {
+        name: "strict_tool",
+        description: "Strict nested object",
+        parameters: {
+          type: "object",
+          properties: {
+            target: { type: "object", additionalProperties: false },
+          },
+        },
+      },
+    ] as never;
+    const [result] = extractOllamaTools(tools);
+    const parameters = result.function.parameters as Record<string, unknown>;
+    const target = (parameters.properties as Record<string, unknown>).target as Record<
+      string,
+      unknown
+    >;
+    expect(target.properties).toEqual({});
+  });
+});

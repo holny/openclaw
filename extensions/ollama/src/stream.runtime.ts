@@ -641,7 +641,15 @@ function normalizeOllamaToolSchema(schema: unknown, isRoot = false): Record<stri
   ) {
     normalized.type = inferOllamaSchemaType(normalized) ?? (isRoot ? "object" : "string");
   }
-  if (normalized.type === "object" && !isRecord(normalized.properties)) {
+  // Ollama needs a properties map on the root parameters object and on strict
+  // (additionalProperties: false) nested objects, but injecting an empty map into
+  // a free-form object (e.g. tool-call `args` with additionalProperties: true)
+  // makes Ollama emit `args: {}` instead of the tool arguments (#157039).
+  if (
+    normalized.type === "object" &&
+    !isRecord(normalized.properties) &&
+    (isRoot || normalized.additionalProperties === false)
+  ) {
     normalized.properties = {};
   }
   return normalized;
@@ -808,7 +816,7 @@ export function convertToOllamaMessages(
   return result;
 }
 
-function extractOllamaTools(tools: Tool[] | undefined): OllamaTool[] {
+export function extractOllamaTools(tools: Tool[] | undefined): OllamaTool[] {
   if (!tools || !Array.isArray(tools)) {
     return [];
   }

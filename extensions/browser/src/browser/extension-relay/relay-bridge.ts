@@ -76,6 +76,30 @@ type ExtensionIdentity = {
   extensionVersion: string;
 };
 
+/**
+ * Sites Chrome reserves for its own pages reject `chrome.debugger` attach
+ * permanently, so they can never resolve to a target identity; enumerating
+ * them poisons the whole inventory (reporter case: a Web Store tab open on
+ * the paired profile).
+ */
+const NON_DEBUGGABLE_PAGE_HOSTS = ["chromewebstore.google.com", "chrome.google.com/webstore"];
+
+function isNonDebuggablePage(tab: TabState): boolean {
+  const url = tab.info.url;
+  if (!url) {
+    return false;
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "chrome:" || parsed.protocol === "devtools:") {
+      return true;
+    }
+    return NON_DEBUGGABLE_PAGE_HOSTS.some((host) => parsed.hostname === host);
+  } catch {
+    return /^chrome:|^devtools:|^view-source:|^about:|^edge:|^chrome-devtools:/.test(url);
+  }
+}
+
 function toErrorPayload(
   id: number | null,
   sessionId: string | undefined,
@@ -605,7 +629,11 @@ export class ExtensionRelayBridge {
   }
 
   private async enumerateTargetInfos(client: CdpClientState): Promise<
-    | { status: "available"; targetInfos: Record<string, unknown>[] }
+    | {
+        status: "available";
+        targetInfos: Record<string, unknown>[];
+        skippedTargets?: Array<{ tabId: number; url: string; reason: string }>;
+      }
     | {
         status: "unavailable";
         reason: "extension-disconnected" | "target-identity-unresolved";
@@ -615,8 +643,19 @@ export class ExtensionRelayBridge {
       return { status: "unavailable", reason: "extension-disconnected" };
     }
     // Tabs can arrive while Chrome attaches the previous batch. Visit each tab
-    // generation once; a failed acquisition still rejects the complete inventory.
-    const identities = new Map<TabState, string | undefined>();
+    // generation once; a failed acquisition still rejects the complete inventory,
+    // except for pages Chrome itself never lets us debug (#156749): Web Store and
+    // other chrome-managed pages reject attach permanently, so they are surfaced
+    // as skipped instead of poisoning the whole inventory.
+    const identities = new Map<
+      TabState,
+      { kind: "attached"; targetId: string } | { kind: "skipped"; reason: string } | undefined
+    >();
+    for (const [, tab] of this.tabs) {
+      if (isNonDebuggablePage(tab)) {
+        identities.set(tab, { kind: "skipped", reason: "page is not debuggable" });
+      }
+    }
     while (this.extensionConnected) {
       const pending = [...this.tabs].filter(([, tab]) => !identities.has(tab));
       if (pending.length === 0) {
@@ -633,7 +672,7 @@ export class ExtensionRelayBridge {
               attached,
               this.autoAttachRecipients(tabId, attached.sessionId),
             );
-            identities.set(tab, attached.targetId);
+            identities.set(tab, { kind: "attached", targetId: attached.targetId });
           }),
         ),
       );
@@ -642,14 +681,27 @@ export class ExtensionRelayBridge {
       return { status: "unavailable", reason: "extension-disconnected" };
     }
     const targetInfos: Record<string, unknown>[] = [];
+    const skippedTargets: Array<{ tabId: number; url: string; reason: string }> = [];
     for (const [tabId, tab] of this.tabs) {
-      const targetId = identities.get(tab);
+      const identity = identities.get(tab);
+      if (identity?.kind === "skipped") {
+        // Attach is prohibited for this page; surface the exclusion instead of
+        // failing the whole inventory and retire it from later commands until
+        // the page changes its debuggability.
+        skippedTargets.push({ tabId, url: tab.info.url, reason: identity.reason });
+        continue;
+      }
+      const targetId = identity?.kind === "attached" ? identity.targetId : undefined;
       if (!targetId || (!tab.target?.sessionId && this.autoAttachRecipients(tabId).length > 0)) {
         return { status: "unavailable", reason: "target-identity-unresolved" };
       }
       targetInfos.push(this.targetInfoForTab(tab, targetId));
     }
-    return { status: "available", targetInfos };
+    return {
+      status: "available",
+      targetInfos,
+      ...(skippedTargets.length > 0 ? { skippedTargets } : {}),
+    };
   }
 
   private announceAttachedTab(
@@ -1081,7 +1133,12 @@ export class ExtensionRelayBridge {
           this.respondError(client, request, message, -32002);
           return;
         }
-        this.respond(client, request, { targetInfos: enumeration.targetInfos });
+        this.respond(client, request, {
+          targetInfos: enumeration.targetInfos,
+          ...(enumeration.skippedTargets?.length
+            ? { skippedTargets: enumeration.skippedTargets }
+            : {}),
+        });
         return;
       }
       case "Target.attachToBrowserTarget": {

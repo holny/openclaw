@@ -461,4 +461,63 @@ describe("ExtensionRelayBridge target enumeration", () => {
       error: { message: expect.stringMatching(/target identit.*unavailable/i) },
     });
   });
+
+  it("surfaces a non-debuggable tab as skipped instead of failing the enumeration", async () => {
+    const bridge = new ExtensionRelayBridge();
+    const extension = wireExtension(bridge, (message) => {
+      if (message.type === "attach") {
+        return message.tabId === 2
+          ? { type: "error", seq: message.seq, message: "cannot attach to this page" }
+          : { type: "result", seq: message.seq, result: { targetId: `target-${message.tabId}` } };
+      }
+      return replyFor(message);
+    });
+    sendHello(extension.handlers, [
+      { tabId: 1, url: "https://example.com", title: "Example", active: true },
+      {
+        tabId: 2,
+        url: "https://chromewebstore.google.com/detail/x/abc",
+        title: "Chrome Web Store",
+        active: false,
+      },
+    ]);
+    const client = new FakeSocket();
+    const cdp = bridge.attachCdpClientSocket(client);
+
+    cdp.onMessage(JSON.stringify({ id: 1, method: "Target.getTargets" }));
+    await flush();
+
+    expect(client.frames().find((frame) => frame.id === 1)).toMatchObject({
+      result: {
+        targetInfos: [expect.objectContaining({ targetId: "target-1" })],
+        skippedTargets: [
+          expect.objectContaining({
+            tabId: 2,
+            url: "https://chromewebstore.google.com/detail/x/abc",
+            reason: "page is not debuggable",
+          }),
+        ],
+      },
+    });
+    expect(extension.socket.frames().filter((frame) => frame.type === "attach")).toHaveLength(1);
+  });
+
+  it("still fails closed when an attachable tab remains unresolved", async () => {
+    const bridge = new ExtensionRelayBridge();
+    const extension = wireExtension(bridge, (message) =>
+      message.type === "attach"
+        ? { type: "error", seq: message.seq, message: "native target unavailable" }
+        : replyFor(message),
+    );
+    sendHello(extension.handlers);
+    const client = new FakeSocket();
+    const cdp = bridge.attachCdpClientSocket(client);
+
+    cdp.onMessage(JSON.stringify({ id: 1, method: "Target.getTargets" }));
+    await flush();
+
+    expect(client.frames().find((frame) => frame.id === 1)).toMatchObject({
+      error: { message: "Target identities are unavailable" },
+    });
+  });
 });

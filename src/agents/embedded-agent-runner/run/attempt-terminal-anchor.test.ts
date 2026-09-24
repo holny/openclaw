@@ -70,4 +70,47 @@ describe("resolveTerminalMessageEntryId", () => {
 
     expect(entryId).toBeNull();
   });
+
+  it("cuts through a real cache-ttl marker on a SessionManager leaf", async () => {
+    // Mirrors the durable-advancement turn shape from #156425: the transcript ends
+    // message(assistant, stop) then custom(openclaw.cache-ttl). The helper is
+    // resolved against a real SessionManager registry (getLeafId/getEntry).
+    const { SessionManager } = await import("../../sessions/session-manager.js");
+    const timestamp = new Date().toISOString();
+    const sessionManager = SessionManager.fromEntries([
+      {
+        type: "session",
+        version: 2,
+        id: "anchor-156425",
+        timestamp,
+        cwd: process.cwd(),
+      },
+      {
+        type: "message",
+        id: "assistant-final",
+        parentId: null,
+        timestamp,
+        message: {
+          role: "assistant",
+          content: "answer",
+          api: "messages",
+          provider: "anthropic",
+          model: "sonnet-4.6",
+          stopReason: "stop",
+          timestamp: Date.now(),
+        },
+      },
+      {
+        type: "custom",
+        id: "cache-ttl-marker",
+        parentId: "assistant-final",
+        timestamp,
+        customType: "openclaw.cache-ttl",
+      },
+    ]);
+
+    const entryId = resolveTerminalMessageEntryId(sessionManager);
+
+    expect(entryId).toBe("assistant-final");
+  });
 });

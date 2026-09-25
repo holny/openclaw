@@ -4218,6 +4218,9 @@ describe("extractOllamaTools tool schema normalization (#157039)", () => {
       },
     ] as never;
     const [result] = extractOllamaTools(tools);
+    if (!result) {
+      throw new Error("expected a normalized tool");
+    }
     const parameters = result.function.parameters as Record<string, unknown>;
     const args = (parameters.properties as Record<string, unknown>).args as Record<string, unknown>;
     expect(args.additionalProperties).toBe(true);
@@ -4227,6 +4230,9 @@ describe("extractOllamaTools tool schema normalization (#157039)", () => {
   it("keeps the empty properties default on the root parameters object", () => {
     const tools = [{ name: "flat_tool", description: "No parameters", parameters: {} }] as never;
     const [result] = extractOllamaTools(tools);
+    if (!result) {
+      throw new Error("expected a normalized tool");
+    }
     expect(result.function.parameters).toEqual({ type: "object", properties: {} });
   });
 
@@ -4244,6 +4250,9 @@ describe("extractOllamaTools tool schema normalization (#157039)", () => {
       },
     ] as never;
     const [result] = extractOllamaTools(tools);
+    if (!result) {
+      throw new Error("expected a normalized tool");
+    }
     const parameters = result.function.parameters as Record<string, unknown>;
     const target = (parameters.properties as Record<string, unknown>).target as Record<
       string,

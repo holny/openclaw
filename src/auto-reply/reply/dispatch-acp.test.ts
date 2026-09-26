@@ -14,10 +14,6 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import type { AcpSessionResolution } from "../../acp/control-plane/manager.types.js";
 import { AcpRuntimeError } from "../../acp/runtime/errors.js";
 import type { AcpSessionStoreEntry } from "../../acp/runtime/session-meta.js";
-import {
-  emitAcpLifecycleEnd,
-  resolveAcpLifecycleEndFields,
-} from "../../agents/command/attempt-execution.js";
 import { registerPendingAgentQuestion } from "../../agents/harness/gateway-question.js";
 import { configureExecutionIdentityAdmissionSink } from "../../audit/execution-identity-admission.js";
 import { configureRuntimeActionDecisionSink } from "../../audit/runtime-action-decision.js";
@@ -27,7 +23,6 @@ import { createChannelAdmissionAudit } from "../../channels/message-access/admis
 import { createHostChannelIngressRuntime } from "../../channels/message-access/runtime.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
-  listSessionParticipantsReadOnly,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
@@ -35,7 +30,6 @@ import {
   OutboundDeliveryError,
   PlatformMessageNotDispatchedError,
 } from "../../infra/outbound/deliver-types.js";
-import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
 import type { ApplyMediaUnderstandingResult } from "../../media-understanding/apply.js";
 import { isImageAttachment } from "../../media-understanding/attachments.normalize.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
@@ -50,6 +44,7 @@ import {
   resolveInlineAgentImageAttachments,
 } from "./agent-turn-attachments.js";
 import { tryDispatchAcpReplyCore } from "./dispatch-acp.js";
+import { expectAcpSessionParticipantInput } from "./dispatch-acp.participant.test-support.js";
 import { createAbortAwareDispatcher } from "./dispatch-from-config.abort.js";
 import { expectedNoQueuedReplyResult } from "./dispatch-result-expectations.test-support.js";
 import {
@@ -161,35 +156,29 @@ const transcriptMocks = vi.hoisted(() => ({
   persistAcpDispatchTranscript: vi.fn(async (_params: unknown) => undefined),
 }));
 
-const bindingServiceMocks = vi.hoisted(() => ({
-  listBySession: vi.fn<(sessionKey: string) => SessionBindingRecord[]>(() => []),
-  unbind: vi.fn<(input: unknown) => Promise<SessionBindingRecord[]>>(async () => []),
-}));
+const { mocks: bindingServiceMocks, module: bindingServiceModule } = await vi.hoisted(async () => {
+  const { createAcpBindingMocks } = await import("./session-binding.test-mocks.js");
+  return createAcpBindingMocks(vi);
+});
 
-vi.mock("./dispatch-acp-manager.runtime.js", () => ({
+vi.mock("../../infra/outbound/session-binding-service.js", () => bindingServiceModule);
+vi.mock("./dispatch-acp-manager.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./dispatch-acp-manager.runtime.js")>()),
   getAcpSessionManager: () => managerMocks,
-  readAcpSessionEntry: (params: { sessionKey: string; cfg?: OpenClawConfig }) =>
-    sessionMetaMocks.readAcpSessionEntry(params),
-  getSessionBindingService: () => ({
-    listBySession: (targetSessionKey: string) =>
-      bindingServiceMocks.listBySession(targetSessionKey),
-    unbind: (input: unknown) => bindingServiceMocks.unbind(input),
-  }),
+  readAcpSessionEntry: sessionMetaMocks.readAcpSessionEntry,
 }));
 
-vi.mock("../../agents/command/attempt-execution.runtime.js", () => ({
-  createAcpToolLifecycleTracker: () => ({
-    active: new Map(),
-    terminalToolCallIds: new Set(),
-    saturated: false,
-  }),
-  emitAcpLifecycleStart: auditMocks.emitAcpLifecycleStart,
-  emitAcpRuntimeEvent: auditMocks.emitAcpRuntimeEvent,
-  emitAcpLifecycleEnd: auditMocks.emitAcpLifecycleEnd,
-  emitAcpLifecycleError: auditMocks.emitAcpLifecycleError,
-  resolveAcpLifecycleEndFields: (...args: Parameters<typeof resolveAcpLifecycleEndFields>) =>
-    resolveAcpLifecycleEndFields(...args),
-}));
+vi.mock("../../agents/command/acp-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../agents/command/acp-lifecycle.js")>();
+  return {
+    createAcpToolLifecycleTracker: actual.createAcpToolLifecycleTracker,
+    emitAcpLifecycleStart: auditMocks.emitAcpLifecycleStart,
+    emitAcpRuntimeEvent: auditMocks.emitAcpRuntimeEvent,
+    emitAcpLifecycleEnd: auditMocks.emitAcpLifecycleEnd,
+    emitAcpLifecycleError: auditMocks.emitAcpLifecycleError,
+    resolveAcpLifecycleEndFields: actual.resolveAcpLifecycleEndFields,
+  };
+});
 
 vi.mock("../../acp/policy.js", () => ({
   resolveAcpDispatchPolicyError: (cfg: OpenClawConfig) =>
@@ -514,22 +503,9 @@ function expectRoutedPayload(callIndex: number, payload: Partial<MockTtsReply>) 
 
 describe("tryDispatchAcpReplyCore", () => {
   it("records an accepted channel input in the canonical participant store", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      await upsertSessionEntryCore(
-        { agentId: "codex-acp", env: state.env, sessionKey },
-        {
-          sessionId: "acp-participant-session",
-          updatedAt: 1,
-        },
-      );
+    await expectAcpSessionParticipantInput(sessionKey, async () => {
       setReadyAcpResolution();
       await runDispatch({ bodyForAgent: "hello", ctxOverrides: { SenderId: "participant" } });
-      await Promise.resolve();
-      expect(
-        listSessionParticipantsReadOnly({ agentId: "codex-acp", env: state.env, sessionKey }).get(
-          sessionKey,
-        ),
-      ).toHaveLength(1);
     });
   });
   beforeEach(() => {
@@ -1660,6 +1636,9 @@ describe("tryDispatchAcpReplyCore", () => {
           input as Parameters<typeof actualTranscript.persistAcpDispatchTranscript>[0],
         );
       });
+      const { emitAcpLifecycleEnd } = await vi.importActual<
+        typeof import("../../agents/command/acp-lifecycle.js")
+      >("../../agents/command/acp-lifecycle.js");
       auditMocks.emitAcpLifecycleEnd.mockImplementationOnce(emitAcpLifecycleEnd);
       const preparedMessages: unknown[] = [];
       let dispatchedRun: ReplyDispatchRun | undefined;

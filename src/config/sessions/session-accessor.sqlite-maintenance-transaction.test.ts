@@ -27,9 +27,16 @@ vi.mock("../../state/openclaw-agent-db.js", async (importOriginal) => {
   };
 });
 
-function lastTransactionOptions() {
+// The production call forwards databaseLabel through to the immediate
+// transaction options even though the wrapper parameter type omits it, so the
+// spy reads the runtime shape directly.
+function lastTransactionOptions():
+  | (Record<string, unknown> & { operationLabel?: string; databaseLabel?: string })
+  | undefined {
   const calls = vi.mocked(runOpenClawAgentWriteTransaction).mock.calls;
-  return calls.at(-1)?.[2];
+  return calls.at(-1)?.[2] as
+    | (Record<string, unknown> & { operationLabel?: string; databaseLabel?: string })
+    | undefined;
 }
 
 describe("reclaimSessionMaintenanceInTransaction slow-hold attribution", () => {

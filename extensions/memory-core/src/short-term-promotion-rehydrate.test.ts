@@ -82,6 +82,9 @@ describe("rehydratePromotionCandidate", () => {
     expect(rehydrated?.endLine).toBe(5);
     expect(rehydrated?.snippet).toContain("Alpha sentence one.");
     expect(rehydrated?.snippet).toContain("Beta sentence two.");
+    // The comment is invisible to matching; it must not reach durable MEMORY.md.
+    expect(rehydrated?.snippet).not.toContain("<!--");
+    expect(rehydrated?.snippet).not.toContain("scratch note");
   });
 
   it("orphans the candidate when only a fragment of the recorded text survives", async () => {
@@ -187,6 +190,50 @@ describe("rehydratePromotionCandidate", () => {
       makeCandidate({ snippet, startLine: 6, endLine: 6 }),
     );
 
+    expect(rehydrated).toBeNull();
+  });
+  it("retains the uniquely nearest match when leading padding shifted it down (#151173)", async () => {
+    const snippet = "Lambda fact about the release.";
+    await writeNote([
+      "# Daily",
+      "Recording placeholder.",
+      "Leading padding line.",
+      "",
+      "Lambda fact about the release.",
+      "Closing line.",
+    ]);
+
+    const rehydrated = await rehydratePromotionCandidate(
+      workspaceDir,
+      makeCandidate({ snippet, startLine: 2, endLine: 2 }),
+    );
+
+    // The padded line sits above the surviving copy; the uniquely nearest window
+    // includes it and the candidate is retained with relocated coordinates.
+    expect(rehydrated).not.toBeNull();
+    expect(rehydrated?.startLine).toBe(4);
+    expect(rehydrated?.endLine).toBe(5);
+    expect(rehydrated?.snippet).toContain("Lambda fact about the release.");
+  });
+
+  it("orphans equally close leading-padded copies of the recorded text (#151173)", async () => {
+    const snippet = "Kappa fact about the release.";
+    await writeNote([
+      "# Daily",
+      "Leading padding above first copy.",
+      "Kappa fact about the release.",
+      "Middle line.",
+      "Kappa fact about the release.",
+      "Trailing line.",
+    ]);
+
+    const rehydrated = await rehydratePromotionCandidate(
+      workspaceDir,
+      makeCandidate({ snippet, startLine: 4, endLine: 4 }),
+    );
+
+    // Both copies are one line away from the recorded coordinates with padding
+    // above them, so the equal-distance guard must orphan instead of picking.
     expect(rehydrated).toBeNull();
   });
 });

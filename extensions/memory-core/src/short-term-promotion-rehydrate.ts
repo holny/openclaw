@@ -211,7 +211,9 @@ function relocateCandidateRange(
     return {
       startLine: candidate.startLine,
       endLine: candidate.endLine,
-      snippet: exactSnippet,
+      // The comparison already treats HTML comments as invisible; the emitted
+      // snippet must not carry them into durable MEMORY.md either (#151299).
+      snippet: toComparable(exactSnippet),
     };
   }
 
@@ -376,7 +378,9 @@ function relocateCandidateRange(
   return {
     startLine: bestMatch.startLine,
     endLine: bestMatch.endLine,
-    snippet: bestMatch.snippet,
+    // Comment-insensitive matching must also keep comments out of what the
+    // promotion writes to durable memory (#151299).
+    snippet: toComparable(bestMatch.snippet),
   };
 }
 

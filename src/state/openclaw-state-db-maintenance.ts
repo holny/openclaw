@@ -15,6 +15,7 @@ import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { VERSION } from "../version.js";
 import {
   LAZY_ADDITIVE_STATE_TABLES,
+  DOCTOR_OWNED_STATE_TABLES,
   OPENCLAW_STATE_SCHEMA_VERSION,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db-contract.js";
@@ -79,14 +80,6 @@ function repairDanglingSkillWorkshopCollectionReviewIndexChanges(database: Datab
     : [];
 }
 
-/** Run read-only schema admission while SQLite ignores malformed catalog rows. */
-function admitStateDatabaseWithDanglingWorkshopIndex<T>(
-  database: DatabaseSync,
-  operation: () => T,
-): T {
-  return withSqliteWritableSchema(database, operation);
-}
-
 /** Admit the schema before Doctor begins its write transaction. */
 function admitStateDatabaseForSchemaRepair(
   database: DatabaseSync,
@@ -101,7 +94,8 @@ function admitStateDatabaseForSchemaRepair(
     }
   };
   if (danglingWorkshopIndex) {
-    admitStateDatabaseWithDanglingWorkshopIndex(database, admit);
+    // Run read-only admission while SQLite ignores malformed catalog rows.
+    withSqliteWritableSchema(database, admit);
   } else {
     admit();
   }
@@ -118,7 +112,7 @@ function assertStateDatabaseSchemaRepairWriteAllowed(
   const assertAllowed = () =>
     assertOpenClawStateWriteAllowed({ database, databasePath: pathname, env });
   if (danglingWorkshopIndex) {
-    admitStateDatabaseWithDanglingWorkshopIndex(database, assertAllowed);
+    withSqliteWritableSchema(database, assertAllowed);
   } else {
     assertAllowed();
   }
@@ -256,7 +250,10 @@ function assertOpenClawStateDatabaseVersionForMigration(
     );
   }
   assertSqliteSchemaTablesPresent(database, options.pathname, OPENCLAW_STATE_SCHEMA_SQL, {
-    allowedMissingTables: STATE_MIGRATION_ALLOWED_MISSING_TABLES[options.version],
+    allowedMissingTables: [
+      ...STATE_MIGRATION_ALLOWED_MISSING_TABLES[options.version],
+      ...DOCTOR_OWNED_STATE_TABLES,
+    ],
   });
 }
 
@@ -663,7 +660,13 @@ export function writeCurrentStateSchemaMetadata(db: DatabaseSync, now: number): 
 
 export function executeCanonicalStateSchema(
   database: DatabaseSync,
-  options: { includeVersionLazyAdditiveTables: boolean },
+  options: { includeVersionLazyAdditiveTables: boolean; includeAgentDeletionJournal?: boolean },
 ): void {
-  database.exec(getOpenClawStateRuntimeSchema(options));
+  database.exec(
+    getOpenClawStateRuntimeSchema({
+      ...options,
+      includeAgentDeletionJournal:
+        options.includeAgentDeletionJournal ?? tableExists(database, "agent_deletion_journal"),
+    }),
+  );
 }

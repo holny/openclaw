@@ -21,13 +21,13 @@ import {
   assertExpectedSharedGitHubPublisher,
   prepareCurrentGitHubPublicationIdentity,
   resolveGitHubPublicationWorktreeOwner,
+  type PublicationSessionIdentity,
 } from "./github-publication-availability.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
 import type { GitHubPublicationRequester } from "./github-publication-requester.js";
 import {
   readSharedGitHubPublicationSession,
-  type SharedGitHubPublicationSession,
   type SharedGitHubPublicationSelector,
 } from "./github-publication-shared-read.js";
 import {
@@ -60,6 +60,12 @@ export type GitHubPublicationClaimRequest = {
   expectedPublisher?: GitHubPublicationPublisher;
 };
 
+export type GitHubPublicationSessionRequest = SessionGitHubPublishParams & {
+  agentId: string;
+  expectedRunId?: string;
+  requester: GitHubPublicationRequester;
+};
+
 export function exactClaimForPlacement(
   placement: NonNullable<ReturnType<WorkerSessionPlacementStore["get"]>>,
 ): WorkerSessionTurnClaim | undefined {
@@ -86,7 +92,7 @@ export function createSharedGitHubPublicationReadMethods(
   ) => Parameters<typeof publicationResult>[0] | undefined,
 ) {
   const readShared = (
-    session: SharedGitHubPublicationSession,
+    session: PublicationSessionIdentity,
     selector: SharedGitHubPublicationSelector,
   ) =>
     readReceipt(
@@ -99,7 +105,7 @@ export function createSharedGitHubPublicationReadMethods(
     );
   return {
     sharedStatus(
-      session: SharedGitHubPublicationSession,
+      session: PublicationSessionIdentity,
       requestId: string,
     ): SessionGitHubStatusResult | undefined {
       const row = readShared(session, { requestId });
@@ -107,7 +113,7 @@ export function createSharedGitHubPublicationReadMethods(
     },
 
     latestShared(
-      session: SharedGitHubPublicationSession,
+      session: PublicationSessionIdentity,
       idempotencyKey?: string,
     ): SessionGitHubStatusResult | null {
       const row = readShared(session, { idempotencyKey });
@@ -136,11 +142,7 @@ export function createGitHubPublicationCoordinatorMethods(params: {
 
   return {
     async requestForSession(
-      input: SessionGitHubPublishParams & {
-        agentId: string;
-        expectedRunId?: string;
-        requester: GitHubPublicationRequester;
-      },
+      input: GitHubPublicationSessionRequest,
     ): Promise<SessionGitHubPublicationResult> {
       if (input.selection?.source === "personal") {
         throw new Error("My GitHub publication requires direct personal authorization.");

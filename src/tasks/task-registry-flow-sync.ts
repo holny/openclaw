@@ -7,7 +7,6 @@ import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worke
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import {
-  reconcileTaskFlowWorkerReceipts,
   runTaskFlowRegistryWorkerMutation,
   syncFlowFromTaskResult,
 } from "./task-flow-runtime-internal.js";
@@ -38,7 +37,7 @@ type TaskFlowSyncRetrySelection =
   | {
       kind: "live";
       owner: TaskFlowSyncLiveOwner;
-      afterSync?: (context: OpenClawStateWorkerContext) => Promise<void>;
+      afterSync?: (context: OpenClawStateWorkerContext) => Promise<boolean>;
     };
 type TaskFlowSyncRetryTimer = {
   timer: ReturnType<typeof setTimeout>;
@@ -51,6 +50,7 @@ async function syncLiveTaskFlow(
   store: TaskRegistryStore,
   owner: TaskFlowSyncLiveOwner,
   projectionPrepared = false,
+  onPublicationError?: (error: unknown) => void,
 ): Promise<TaskLiveFlowSyncOutcome> {
   const prepared = projectionPrepared || (await owner.prepare(context, store, 1));
   owner.assertCurrent(context, store);
@@ -70,7 +70,7 @@ async function syncLiveTaskFlow(
     }
   };
   const outcome = await runTaskFlowRegistryWorkerMutation(
-    { flowId, admission: context.admission },
+    { flowId, admission: context.admission, onPublicationError },
     () =>
       store.syncLiveTaskFlowAsync(
         context,
@@ -180,8 +180,11 @@ function scheduleTaskFlowSyncRetry(
             scheduleTaskFlowSyncRetry(current, store, id, operation, retrySelection, attempt + 1);
           } else {
             retrySelection.owner.assertCurrent(current, store);
-            await retrySelection.afterSync?.(current);
+            const settled = await retrySelection.afterSync?.(current);
             retrySelection.owner.assertCurrent(current, store);
+            if (settled === false) {
+              scheduleTaskFlowSyncRetry(current, store, id, operation, retrySelection, attempt + 1);
+            }
           }
         } catch (error) {
           if (isSqliteWorkerError(error, "overloaded")) {
@@ -220,9 +223,6 @@ function scheduleTaskFlowSyncRetry(
           reason: outcome.result.reason,
         });
         scheduleTaskFlowSyncRetry(current, store, id, operation, retrySelection, attempt + 1);
-      }
-      if (outcome.flowId) {
-        await reconcileTaskFlowWorkerReceipts(current, [outcome.flowId]);
       }
     }, "tasks:mutation").catch((error: unknown) => {
       log.warn("Failed to admit parent flow sync retry from task", {
@@ -313,24 +313,27 @@ export function syncTaskFlowWithLiveRetry(
   }
 }
 
-/** Initial worker mutations keep flow publication before their task observer. */
+/** Report completed flow work while retaining the existing retry when it is deferred. */
 export async function syncTaskFlowWithLiveRetryAsync(
   context: OpenClawStateWorkerContext,
   store: TaskRegistryStore,
   task: TaskRecord,
   operation: string,
   owner: TaskFlowSyncLiveOwner,
-): Promise<void> {
+): Promise<boolean> {
   let outcome: TaskLiveFlowSyncOutcome;
+  let publicationSettled = true;
   try {
-    outcome = await syncLiveTaskFlow(context, store, owner, true);
+    outcome = await syncLiveTaskFlow(context, store, owner, true, () => {
+      publicationSettled = false;
+    });
   } catch (error) {
     if (!isSqliteWorkerError(error, "overloaded")) {
       throw error;
     }
     owner.assertCurrent(context, store);
     scheduleTaskFlowSyncRetry(context, store, task.taskId, operation, { kind: "live", owner });
-    return;
+    return false;
   }
   if (outcome.kind === "retry" || (outcome.kind === "result" && !outcome.result.ok)) {
     log.warn("Failed to sync parent flow from task mutation", {
@@ -339,7 +342,9 @@ export async function syncTaskFlowWithLiveRetryAsync(
       flowId: task.parentFlowId,
     });
     scheduleTaskFlowSyncRetry(context, store, task.taskId, operation, { kind: "live", owner });
+    return false;
   }
+  return publicationSettled;
 }
 
 /** A known commit whose publication hook never ran still owns its flow follow-up. */
@@ -349,7 +354,7 @@ export function retainCommittedTaskFlowEffects(
   task: TaskRecord,
   operation: string,
   owner: TaskFlowSyncLiveOwner,
-  afterSync?: (context: OpenClawStateWorkerContext) => Promise<void>,
+  afterSync?: (context: OpenClawStateWorkerContext) => Promise<boolean>,
 ): void {
   if (!task.parentFlowId?.trim()) {
     return;

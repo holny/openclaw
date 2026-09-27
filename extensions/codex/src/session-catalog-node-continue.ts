@@ -21,7 +21,7 @@ import {
   findNodeAdoptedSessionEntry,
   nodeAdoptedSourceKey,
   nodeSessionMarker,
-  runSessionActionExclusive,
+  catalogSessionActions,
   type AdoptedSessionEntry,
   type CodexNodeHistory,
   type CodexSessionDisposition,
@@ -72,13 +72,7 @@ export function nodeLabel(node: CatalogNode): string {
 export function compareNodeLabels(left: CatalogNode, right: CatalogNode): number {
   const leftLabel = nodeLabel(left);
   const rightLabel = nodeLabel(right);
-  if (leftLabel < rightLabel) {
-    return -1;
-  }
-  if (leftLabel > rightLabel) {
-    return 1;
-  }
-  return 0;
+  return leftLabel < rightLabel ? -1 : leftLabel > rightLabel ? 1 : 0;
 }
 
 function canContinueCodexOnNode(node: CatalogNode): boolean {
@@ -98,7 +92,6 @@ export async function listPairedNode(params: {
   runtime: PluginRuntime;
   node: CatalogNode;
   query: CodexSessionCatalogParams;
-  adoptedSessions: ReadonlyMap<string, AdoptedSessionEntry>;
   terminalCapabilities: Pick<CodexSessionCatalogHost, "canOpenTerminalCodex" | "canStartTerminal">;
   onHost?: (host: CodexSessionCatalogHost) => void;
   waitUntil?: (completion: Promise<void>) => void;
@@ -154,19 +147,9 @@ export async function listPairedNode(params: {
         ...page,
         canContinueCodex:
           common.canContinueCodex && page.canContinueCodex === true && Boolean(page.sourceHomeId),
-        sessions: page.sessions.map((session) => {
-          const adopted = page.sourceHomeId
-            ? params.adoptedSessions.get(
-                nodeAdoptedSourceKey(hostId, session.threadId, page.sourceHomeId),
-              )
-            : undefined;
-          return Object.assign(
-            {},
-            session,
-            page.sourceHomeId ? { sourceHomeId: page.sourceHomeId } : {},
-            adopted ? { sessionKey: adopted.key } : {},
-          );
-        }),
+        sessions: page.sessions.map((session) =>
+          Object.assign({}, session, page.sourceHomeId ? { sourceHomeId: page.sourceHomeId } : {}),
+        ),
       };
     })
     .catch((error: unknown) => ({
@@ -410,7 +393,7 @@ export async function continueNodeCodexSession(params: {
     sourceKey: operationKey,
     findExisting: () => undefined,
     create: () =>
-      runSessionActionExclusive(sourceKey, async () =>
+      catalogSessionActions.enqueue(sourceKey, async () =>
         continueNodeCodexSessionInner({ ...params, agentId }),
       ),
     complete: async (continued) =>

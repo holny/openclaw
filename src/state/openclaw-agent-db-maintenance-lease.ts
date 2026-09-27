@@ -7,9 +7,9 @@ import {
   runWithAgentDatabaseMaintenanceAuthority,
 } from "./openclaw-agent-db-lease.js";
 import { closeOpenClawAgentDatabasesAsync } from "./openclaw-agent-db-lifecycle.js";
+import { clearOpenClawAgentDatabaseValidationCache } from "./openclaw-agent-db-validation-cache.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
-import type { OpenClawStateMutationOperation } from "./openclaw-state-lease-context.js";
 import { withOpenClawStateLease, type OpenClawStateLeaseContext } from "./openclaw-state-lease.js";
 
 type MaintenanceScope = {
@@ -90,24 +90,6 @@ async function runMaintenanceScope<T>(
           },
         }
       : {}),
-    ...(owner.withDatabaseFileMutation
-      ? {
-          withDatabaseFileMutation<Value, Captured>(
-            operation: OpenClawStateMutationOperation<Value, Captured>,
-          ) {
-            assertAdmission();
-            return track(
-              owner.withDatabaseFileMutation!({
-                ...operation,
-                assertCurrent() {
-                  assertCurrent();
-                  operation.assertCurrent();
-                },
-              }),
-            );
-          },
-        }
-      : {}),
   };
   try {
     return await withSqliteIntegrityWorkerScope(assertCurrent, () =>
@@ -164,6 +146,7 @@ export function withAgentDatabaseMaintenanceLease<T>(
   options: Pick<OpenClawStateDatabaseOptions, "env"> & {
     schemaPolicy?: "existing";
     leaseMs?: number;
+    processBound?: boolean;
   },
   run: (maintenance: OpenClawStateLeaseContext) => Promise<T>,
 ): Promise<T> {
@@ -192,6 +175,7 @@ export function withAgentDatabaseMaintenanceLease<T>(
       waitMs: 5_000,
       prepareDatabase: true,
       heartbeat: "worker",
+      processBound: options.processBound,
       leaseLabel: "agent database maintenance lease",
       operationLabel: "agent.database.maintenance.lease",
     },
@@ -199,6 +183,7 @@ export function withAgentDatabaseMaintenanceLease<T>(
       runMaintenanceScope(databasePath, maintenance, async (lease) => {
         await closeOpenClawAgentDatabasesAsync();
         assertNoOpenClawAgentDatabaseLeases(lease, options);
+        clearOpenClawAgentDatabaseValidationCache();
         return run(lease);
       }),
   );

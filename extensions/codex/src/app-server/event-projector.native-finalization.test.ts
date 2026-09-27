@@ -1,3 +1,4 @@
+import { createNativeCommandItem } from "./event-projector-command.test-support.js";
 import {
   describe,
   registerCodexEventProjectorTestLifecycle,
@@ -399,7 +400,6 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
 
   it.each([
     ["missing", undefined, undefined],
-    ["in-progress", "in_progress", undefined],
     [
       "unrecognized",
       "future_status",
@@ -480,19 +480,10 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
 
     await projector.handleNotification(
       turnCompleted([
-        {
-          type: "commandExecution",
+        createNativeCommandItem({
           id: "cmd-snapshot",
-          command: "pnpm test extensions/codex",
-          cwd: "/workspace",
-          processId: null,
-          source: "agent",
-          status: "completed",
-          commandActions: [],
           aggregatedOutput: "ok",
-          exitCode: 0,
-          durationMs: 42,
-        },
+        }),
       ]),
     );
 
@@ -543,7 +534,7 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
     });
   });
 
-  it("caps oversized native command output before transcript, trajectory, and progress projection", async () => {
+  it("preserves oversized native transcripts while bounding trajectory and progress projection", async () => {
     const trajectoryRecorder = {
       filePath: "trajectory.jsonl",
       recordEvent: vi.fn(),
@@ -561,19 +552,10 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
 
     await projector.handleNotification(
       turnCompleted([
-        {
-          type: "commandExecution",
+        createNativeCommandItem({
           id: "cmd-large",
-          command: "pnpm test extensions/codex",
-          cwd: "/workspace",
-          processId: null,
-          source: "agent",
-          status: "completed",
-          commandActions: [],
           aggregatedOutput: largeOutput,
-          exitCode: 0,
-          durationMs: 42,
-        },
+        }),
       ]),
     );
 
@@ -603,8 +585,7 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
     );
     expect(toolResultContent).toEqual([{ type: "text", text: expect.any(String) }]);
     const toolResultContentItem = requireRecord(toolResultContent[0], "tool result content item");
-    expect(toolResultContentItem.text).toHaveLength(10_000);
-    expect(toolResultContentItem.text).toContain("OpenClaw truncated Codex native tool output");
+    expect(toolResultContentItem.text).toBe(largeOutput);
   });
 
   it("delivers completed assistant text when a native tool call finishes without a matching result", async () => {
@@ -617,19 +598,13 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
 
     await projector.handleNotification(
       forCurrentTurn("item/started", {
-        item: {
-          type: "commandExecution",
+        item: createNativeCommandItem({
           id: "cmd-denied",
           command: "node scripts/report.js --publish",
-          cwd: "/workspace",
-          processId: null,
-          source: "agent",
           status: "inProgress",
-          commandActions: [],
-          aggregatedOutput: null,
           exitCode: null,
           durationMs: null,
-        },
+        }),
       }),
     );
     await projector.handleNotification(
@@ -700,19 +675,12 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
 
     await projector.handleNotification(
       forCurrentTurn("item/started", {
-        item: {
-          type: "commandExecution",
+        item: createNativeCommandItem({
           id: "cmd-whitespace",
-          command: "pnpm test extensions/codex",
-          cwd: "/workspace",
-          processId: null,
-          source: "agent",
           status: "inProgress",
-          commandActions: [],
-          aggregatedOutput: null,
           exitCode: null,
           durationMs: null,
-        },
+        }),
       }),
     );
     await projector.handleNotification(

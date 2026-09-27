@@ -1,5 +1,6 @@
 import type { HumanMention } from "@openclaw/gateway-protocol";
 import type { MediaKind } from "@openclaw/media-core/constants";
+import type { ChatWorkContext } from "../../../../packages/gateway-protocol/src/chat-work-context.js";
 /**
  * Chat message types for the UI layer.
  */
@@ -8,6 +9,7 @@ import type {
   ChatSendIntent,
   QueueMode,
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
+import type { extractCanvasFromText } from "../../../../src/chat/canvas-render.js";
 import type { MessageClientSource } from "../../../../src/chat/message-client-source.js";
 import type { ClawHubRecommendation } from "../../../../src/shared/clawhub-recommendations.js";
 import type { BrowserTabTarget } from "../../components/browser/browser-target.ts";
@@ -52,19 +54,23 @@ export type ChatAttachment = {
 };
 
 // Shared payload contract: draft and outbox storage must not import each other's runtime.
-export type DurableComposerDraftAttachment = {
+export type DurableComposerDraftAttachment = Omit<
+  ChatAttachment,
+  "id" | "dataUrl" | "previewUrl"
+> & {
   blob: Blob;
-  mimeType: string;
-  origin?: "paste" | "file";
-  fileName?: string;
-  sizeBytes?: number;
-  browserAnnotation?: BrowserAnnotationAttachment;
-  selectionAnnotation?: ChatSelectionAnnotation;
 };
 
 export type ChatComposerDraftRetry = {
   expectedDraftRevision: number;
   draftRevision: number;
+};
+
+export type ChatReplyTarget = {
+  messageId: string;
+  text: string;
+  senderLabel?: string | null;
+  sourceMessageId?: string | null;
 };
 
 export type ChatGoalDraftMode = { sessionId?: string } & (
@@ -79,9 +85,17 @@ export type ChatGoalDraft = { sessionId?: string } & (
 
 export type ChatGoalAction = "pause" | "resume" | "clear";
 
+export type ChatGoalRecovery = {
+  pending: boolean;
+  retired?: "expired" | "invalid";
+  onCheck: () => Promise<boolean>;
+};
+
 export type ChatComposerMemoryFallback = {
+  incognito?: boolean;
   awaitingDefaults?: true;
   goalMode?: ChatGoalDraftMode;
+  replyTarget?: ChatReplyTarget;
   message: string;
   mentions?: readonly HumanMention[];
   attachments: ChatAttachment[];
@@ -111,12 +125,18 @@ export type ToolApprovalReview = {
   rationale?: string;
 };
 
+export type ChatQueueDisplayItem = ChatQueueItem & { serverQueued?: true };
+
 export type ChatQueueItem = {
   id: string;
+  /** UI question associated with this input; delivery and retry stay outbox-owned. */
+  asyncQuestionItemId?: string;
+  workContext?: ChatWorkContext;
+  workContextUnavailable?: true;
   text: string;
   mentions?: readonly HumanMention[];
   createdAt: number;
-  /** Operator-owned queue position; absent means "wherever arrival put it". */
+  /** Stable arrival position; only an explicit reorder moves an existing input. */
   orderKey?: number;
   /** Immutable bytes belong to this queued input; routing belongs to the outbox metadata. */
   attachmentPayload?: { key: string; recoveryScope: string; tabId: string };
@@ -147,6 +167,8 @@ export type ChatQueueItem = {
     | "sending"
     | "waiting-reconnect"
     | "unconfirmed"
+    // Provider review requires a new operator decision even if delivery has prior attempts.
+    | "held"
     | "failed";
   sendSubmittedAtMs?: number;
   sendRequestStartedAtMs?: number;
@@ -157,7 +179,14 @@ export type ChatQueueItem = {
 
 /** Union type for items in the chat thread */
 export type ChatItem =
-  | { kind: "message"; key: string; message: unknown; duplicateCount?: number }
+  | {
+      kind: "message";
+      key: string;
+      message: unknown;
+      duplicateCount?: number;
+      /** A distinct input remains a presentation boundary before execution starts. */
+      startsTurn?: true;
+    }
   | {
       kind: "notice";
       key: string;
@@ -180,7 +209,6 @@ export type ChatItem =
       icon?: keyof typeof toolIcons;
       metric?: string;
       description?: string;
-      action?: { kind: "session-checkpoints"; label: string };
       timestamp: number;
     }
   | {
@@ -189,6 +217,7 @@ export type ChatItem =
       text: string;
       startedAt: number;
       isStreaming: boolean;
+      replyToSender?: SenderIdentity;
       runId?: string;
       boundaryId?: string;
     }
@@ -386,6 +415,13 @@ export type NormalizedMessage = {
     | null;
 };
 
+export type ToolOutputMetadata = {
+  source: "provider-response" | "execution";
+  modelInput: "unverified";
+  outcome?: "unknown";
+  captureTruncated?: true;
+};
+
 /** Tool card representation for inline tool call/result rendering */
 export type ToolCard = {
   id: string;
@@ -396,6 +432,11 @@ export type ToolCard = {
   args?: unknown;
   inputText?: string;
   outputText?: string;
+  /** Result identity stays distinct from the assistant call after presentation grouping. */
+  resultMessageId?: string;
+  /** Gateway display projection omitted content; the durable result may still be complete. */
+  outputTruncated?: boolean;
+  toolOutput?: ToolOutputMetadata;
   /** Structured tool result details (e.g. the edit tool's precomputed diff). */
   details?: unknown;
   /** Monotonic edit counts while a live tool call is still receiving input. */
@@ -415,27 +456,7 @@ export type ToolCard = {
   /** Tab actions can identify a route without a previewable page URL. */
   browserTab?: BrowserTabTarget;
   preview?:
-    | {
-        kind: "canvas";
-        surface: "assistant_message";
-        render: "url";
-        title?: string;
-        preferredHeight?: number;
-        url?: string;
-        viewId?: string;
-        className?: string;
-        style?: string;
-        sandbox?: "strict" | "scripts";
-        boardWidgetName?: string;
-        mcpApp?: {
-          viewId: string;
-          serverName?: string;
-          toolName?: string;
-          uiResourceUri?: string;
-          toolCallId?: string;
-          originSessionKey?: string;
-        };
-      }
+    | (NonNullable<ReturnType<typeof extractCanvasFromText>> & { surface: "assistant_message" })
     | (BrowserTabTarget & { kind: "browser-tab"; url: string; title?: string });
 };
 

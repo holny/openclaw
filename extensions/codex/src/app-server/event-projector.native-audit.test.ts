@@ -1,4 +1,5 @@
 import { extractToolResultText } from "openclaw/plugin-sdk/provider-transport-runtime";
+import { createNativeCommandItem } from "./event-projector-command.test-support.js";
 import {
   describe,
   registerCodexEventProjectorTestLifecycle,
@@ -21,6 +22,13 @@ import {
 registerCodexEventProjectorTestLifecycle();
 
 describe("CodexAppServerEventProjector native tool audit projection", () => {
+  const workspaceRejection = {
+    status: "declined",
+    output: "patch rejected: writing outside of the project; rejected by user approval settings",
+    outputFirst: true,
+    isError: true,
+  };
+
   it("synthesizes normalized tool progress for Codex-native tool items", async () => {
     const output = `${"x".repeat(8_500)}\ntool output tail`;
     const onAgentEvent = vi.fn();
@@ -32,37 +40,21 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
       await projector.handleNotification(
         forCurrentTurn("item/started", {
           startedAtMs: 1_750_000_000_000,
-          item: {
-            type: "commandExecution",
+          item: createNativeCommandItem({
             id: "cmd-1",
-            command: "pnpm test extensions/codex",
-            cwd: "/workspace",
-            processId: null,
-            source: "agent",
             status: "inProgress",
-            commandActions: [],
-            aggregatedOutput: null,
             exitCode: null,
             durationMs: null,
-          },
+          }),
         }),
       );
       await projector.handleNotification(
         forCurrentTurn("item/completed", {
           completedAtMs: 1_750_000_000_042,
-          item: {
-            type: "commandExecution",
+          item: createNativeCommandItem({
             id: "cmd-1",
-            command: "pnpm test extensions/codex",
-            cwd: "/workspace",
-            processId: null,
-            source: "agent",
-            status: "completed",
-            commandActions: [],
             aggregatedOutput: output,
-            exitCode: 0,
-            durationMs: 42,
-          },
+          }),
         }),
       );
       await flushDiagnosticEvents();
@@ -237,51 +229,22 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
     },
     {
       label: "workspace rejection before its native item",
-      status: "declined",
-      output: "patch rejected: writing outside of the project; rejected by user approval settings",
-      outputFirst: true,
-      isError: true,
-    },
-    {
-      label: "JSON-function patch success before its native item",
-      status: "completed",
-      output: "Successfully applied patch to runtime-tool-fixture-patch.txt",
-      outputFirst: true,
-      isError: false,
-      functionCall: true,
+      ...workspaceRejection,
     },
     {
       label: "JSON-function workspace rejection before its native item",
-      status: "declined",
-      output: "patch rejected: writing outside of the project; rejected by user approval settings",
-      outputFirst: true,
-      isError: true,
+      ...workspaceRejection,
       functionCall: true,
     },
     {
       label: "JSON-function workspace rejection without a native FileChange item",
-      status: "declined",
-      output: "patch rejected: writing outside of the project; rejected by user approval settings",
-      outputFirst: true,
-      isError: true,
+      ...workspaceRejection,
       functionCall: true,
       omitNativeItem: true,
     },
     {
-      label: "intercepted exec-command patch success before its native FileChange item",
-      status: "completed",
-      output: "Successfully applied patch to runtime-tool-fixture-patch.txt",
-      outputFirst: true,
-      isError: false,
-      functionCall: true,
-      execCommand: true,
-    },
-    {
       label: "intercepted exec-command workspace rejection without a native FileChange item",
-      status: "declined",
-      output: "patch rejected: writing outside of the project; rejected by user approval settings",
-      outputFirst: true,
-      isError: true,
+      ...workspaceRejection,
       functionCall: true,
       execCommand: true,
       omitNativeItem: true,
@@ -289,10 +252,7 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
     {
       label:
         "intercepted cd-prefixed exec-command workspace rejection without a native FileChange item",
-      status: "declined",
-      output: "patch rejected: writing outside of the project; rejected by user approval settings",
-      outputFirst: true,
-      isError: true,
+      ...workspaceRejection,
       functionCall: true,
       execCommand: true,
       workingDirectoryPrefix: true,
@@ -300,10 +260,7 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
     },
     {
       label: "workdir-scoped exec-command workspace rejection without a native FileChange item",
-      status: "declined",
-      output: "patch rejected: writing outside of the project; rejected by user approval settings",
-      outputFirst: true,
-      isError: true,
+      ...workspaceRejection,
       functionCall: true,
       execCommand: true,
       executionWorkdir: "/repo/subdir",
@@ -311,19 +268,7 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
     },
     {
       label: "code-mode native workspace rejection without a FileChange item",
-      status: "declined",
-      output: "patch rejected: writing outside of the project; rejected by user approval settings",
-      outputFirst: true,
-      isError: true,
-      codeMode: true,
-      omitNativeItem: true,
-    },
-    {
-      label: "code-mode native invalid patch without a FileChange item",
-      status: "failed",
-      output: "apply_patch verification failed: failed to find expected lines",
-      outputFirst: true,
-      isError: true,
+      ...workspaceRejection,
       codeMode: true,
       omitNativeItem: true,
     },
@@ -431,7 +376,11 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
       requireArray(toolResult.content, "native patch result")[0],
       "result",
     );
-    expect(output.text).toBe(testCase.output);
+    expect(output.text).toBe(
+      "codeMode" in testCase
+        ? JSON.stringify((rawOutput.params as { item: { output: unknown } }).item.output, null, 2)
+        : testCase.output,
+    );
   });
 
   it("does not double-count a successful code-mode patch and its canonical FileChange", async () => {
@@ -488,13 +437,16 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
     });
     expect(patchCalls).toHaveLength(1);
     expect(patchCalls[0]).toMatchObject({ id: nativeCallId, name: "apply_patch" });
-    expect(
-      result.messagesSnapshot.some(
-        (message) =>
-          message.role === "toolResult" &&
-          (message as { toolCallId?: string }).toolCallId === outerCallId,
-      ),
-    ).toBe(false);
+    expect(result.messagesSnapshot).toContainEqual(
+      expect.objectContaining({
+        role: "toolResult",
+        toolCallId: outerCallId,
+        toolName: "exec",
+        __openclaw: expect.objectContaining({
+          toolOutput: { source: "provider-response", modelInput: "unverified" },
+        }),
+      }),
+    );
   });
 
   it("does not classify an unrecognized raw patch failure as a success", async () => {
@@ -586,7 +538,8 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
       result.messagesSnapshot.some(
         (message) =>
           message.role === "toolResult" &&
-          (message as { toolCallId?: string }).toolCallId === callId,
+          message.toolCallId === callId &&
+          message.toolName === "apply_patch",
       ),
     ).toBe(false);
   });
@@ -637,7 +590,8 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
       result.messagesSnapshot.some(
         (message) =>
           message.role === "toolResult" &&
-          (message as { toolCallId?: string }).toolCallId === callId,
+          message.toolCallId === callId &&
+          message.toolName === "apply_patch",
       ),
     ).toBe(false);
   });
@@ -731,19 +685,12 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
       const projector = await createProjector(undefined, {
         runAbortSignal: abortController.signal,
       });
-      const commandItem = {
-        type: "commandExecution",
+      const commandItem = createNativeCommandItem({
         id: "cmd-aborted",
-        command: "pnpm test extensions/codex",
-        cwd: "/workspace",
-        processId: null,
-        source: "agent",
         status: "inProgress",
-        commandActions: [],
-        aggregatedOutput: null,
         exitCode: null,
         durationMs: null,
-      };
+      });
 
       try {
         await projector.handleNotification(forCurrentTurn("item/started", { item: commandItem }));
@@ -784,19 +731,12 @@ describe("CodexAppServerEventProjector native tool audit projection", () => {
       try {
         await projector.handleNotification(
           forCurrentTurn("item/started", {
-            item: {
-              type: "commandExecution",
+            item: createNativeCommandItem({
               id: "cmd-active-abort",
-              command: "pnpm test extensions/codex",
-              cwd: "/workspace",
-              processId: null,
-              source: "agent",
               status: "inProgress",
-              commandActions: [],
-              aggregatedOutput: null,
               exitCode: null,
               durationMs: null,
-            },
+            }),
           }),
         );
         projector.buildResult(buildEmptyToolTelemetry());

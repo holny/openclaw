@@ -42,11 +42,7 @@ import { renderNewSessionDraftView } from "./draft-view.ts";
 import { renderNewSessionIncognitoControl } from "./incognito-control.ts";
 import { forgetInstantThreadPage } from "./instant-thread-restore.ts";
 import type { NewSessionRouteData } from "./location.ts";
-import {
-  closeAgentPicker,
-  closeSessionMenus,
-  createControllerHost,
-} from "./new-session-runtime.ts";
+import { closeAgentPicker, closeSessionMenus } from "./new-session-runtime.ts";
 import { renderAgentSelect, renderNewSessionPlaceControls } from "./target-controls.ts";
 
 registerNewSessionSetupEnglish();
@@ -124,9 +120,8 @@ export class NewSessionPage extends OpenClawLightDomElement {
 
   constructor() {
     super();
-    const host = createControllerHost(this);
     this.draft = new NewSessionDraftController(
-      host,
+      this,
       () => ({ context: this.context, data: this.data, isConnected: this.isConnected }),
       {
         requestUpdate: () => this.requestUpdate(),
@@ -228,6 +223,25 @@ export class NewSessionPage extends OpenClawLightDomElement {
     }
   }
 
+  focusComposer(): void {
+    const context = this.context;
+    const owner = this.routeOwnerKey();
+    const previousFocus = document.activeElement;
+    void this.updateComplete.then(() => {
+      if (
+        this.isConnected &&
+        !this.retainedForHandoff &&
+        this.context === context &&
+        this.routeOwnerKey() === owner &&
+        // A later interaction owns focus even if this draft is still mounted.
+        (document.activeElement === previousFocus || document.activeElement === document.body) &&
+        !document.openClawModalLayers?.size
+      ) {
+        this.submission.composerTextarea.getTextarea()?.focus({ preventScroll: true });
+      }
+    });
+  }
+
   override connectedCallback() {
     super.connectedCallback();
     this.submission.draftPersistence.connect();
@@ -313,6 +327,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
         ownedMessage,
         ownedMentions,
       );
+      this.focusComposer();
       return;
     }
     if (this.openedGroupDefaults !== groupDefaults) {

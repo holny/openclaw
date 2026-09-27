@@ -28,7 +28,7 @@ const retireSessionMcpRuntime = vi.hoisted(() => vi.fn());
 const retireSessionMcpRuntimeForSessionKey = vi.hoisted(() => vi.fn());
 const hookRunnerMock = vi.hoisted(() => ({
   hasHooks: vi.fn(() => false),
-  runBeforeModelResolve: vi.fn(async () => undefined),
+  runBeforeModelResolve: vi.fn(),
 }));
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 

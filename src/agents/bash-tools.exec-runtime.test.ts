@@ -229,11 +229,11 @@ describe("runExecProcess exit-notify run correlation", () => {
     });
     markBackgrounded(run.session);
     await run.promise;
-    const outcome = await run.promise;
+    await run.promise;
     expect(run.session.runId).toBe("run-155329-correlation");
     const [firstCall] = enqueueSystemEventWithReceiptMock.mock.calls;
     expect(firstCall).toBeDefined();
-    const [eventText] = firstCall;
+    const [eventText] = firstCall ?? [];
     const text = typeof eventText === "string" ? eventText : String(eventText);
     expect(text).toMatch(
       /Exec (completed|failed) \([a-z0-9-]{1,8}, code 7, run run-155329-correlation\)/,

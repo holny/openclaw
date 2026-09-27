@@ -1,8 +1,7 @@
-// Terminal anchor helper tests cover the leaf-walk for durable context-engine anchors.
 import { describe, expect, it } from "vitest";
 import { resolveTerminalMessageEntryId } from "./attempt-terminal-anchor.js";
 
-type FakeEntry = { id: string; parentId: string | null; type: string };
+type FakeEntry = { id: string; parentId: string | null; type: string; customType?: string };
 
 function managerFor(entries: FakeEntry[], leafId: string | null) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
@@ -14,8 +13,18 @@ function managerFor(entries: FakeEntry[], leafId: string | null) {
 
 describe("resolveTerminalMessageEntryId", () => {
   const base = { id: "assistant-1", parentId: null, type: "message" };
-  const marker = { id: "marker-1", parentId: "assistant-1", type: "custom" };
-  const snapshot = { id: "snapshot-1", parentId: "marker-1", type: "custom" };
+  const marker = {
+    id: "marker-1",
+    parentId: "assistant-1",
+    type: "custom",
+    customType: "openclaw.cache-ttl",
+  };
+  const snapshot = {
+    id: "snapshot-1",
+    parentId: "marker-1",
+    type: "custom",
+    customType: "projection-snapshot",
+  };
 
   it("returns the leaf when it is already a message entry", () => {
     const entryId = resolveTerminalMessageEntryId({
@@ -27,39 +36,30 @@ describe("resolveTerminalMessageEntryId", () => {
     expect(entryId).toBe("leaf-1");
   });
 
-  it("walks one cache-ttl marker down to its parent message", () => {
-    const entryId = resolveTerminalMessageEntryId({
-      getLeafId: () => "marker-1",
-      getEntry: (id) => (id === marker.id ? marker : id === base.id ? base : undefined),
-    });
-
-    expect(entryId).toBe("assistant-1");
+  it("skips stacked cache-TTL markers", () => {
+    const secondMarker = { ...marker, id: "marker-2", parentId: marker.id };
+    expect(
+      resolveTerminalMessageEntryId(managerFor([base, marker, secondMarker], secondMarker.id)),
+    ).toBe(base.id);
   });
 
-  it("walks past stacked custom entries to the nearest message", () => {
-    const entryId = resolveTerminalMessageEntryId({
-      getLeafId: () => "snapshot-1",
-      getEntry: (id) =>
-        id === "snapshot-1"
-          ? snapshot
-          : id === "marker-1"
-            ? marker
-            : id === base.id
-              ? base
-              : undefined,
-    });
-
-    expect(entryId).toBe("assistant-1");
+  it("preserves unrelated custom terminal entries", () => {
+    expect(resolveTerminalMessageEntryId(managerFor([base, marker, snapshot], snapshot.id))).toBe(
+      snapshot.id,
+    );
+    const trailingMarker = { ...marker, id: "trailing", parentId: snapshot.id };
+    expect(
+      resolveTerminalMessageEntryId(
+        managerFor([base, marker, snapshot, trailingMarker], trailingMarker.id),
+      ),
+    ).toBe(snapshot.id);
   });
 
-  it("returns null when the leaf chain has no message below the custom entry", () => {
-    const entryId = resolveTerminalMessageEntryId({
-      getLeafId: () => "marker-1",
-      getEntry: (id) =>
-        id === "marker-1" ? { id: "marker-1", parentId: null, type: "custom" } : undefined,
-    });
-
-    expect(entryId).toBeNull();
+  it("returns null for a marker without an available parent", () => {
+    expect(
+      resolveTerminalMessageEntryId(managerFor([{ ...marker, parentId: null }], marker.id)),
+    ).toBeNull();
+    expect(resolveTerminalMessageEntryId(managerFor([marker], marker.id))).toBeNull();
   });
 
   it("returns null when there is no leaf", () => {
@@ -72,9 +72,6 @@ describe("resolveTerminalMessageEntryId", () => {
   });
 
   it("cuts through a real cache-ttl marker on a SessionManager leaf", async () => {
-    // Mirrors the durable-advancement turn shape from #156425: the transcript ends
-    // message(assistant, stop) then custom(openclaw.cache-ttl). The helper is
-    // resolved against a real SessionManager registry (getLeafId/getEntry).
     const { SessionManager } = await import("../../sessions/session-manager.js");
     const timestamp = new Date().toISOString();
     const sessionManager = SessionManager.fromEntries([

@@ -1,35 +1,21 @@
 /**
- * Terminal transcript anchor helpers for durable context-engine turns.
- *
- * Walks the leaf's ancestry to the nearest non-custom entry. Side-appended
- * extension entries (the cache-TTL marker, projection snapshots) own the leaf
- * after a turn but never carry an active message position, so the durable
- * turn anchor has to come from the message below them (#156425).
+ * Cache-TTL bookkeeping advances the leaf without adding a message anchor.
+ * Other entry kinds retain their terminal semantics.
  */
 export function resolveTerminalMessageEntryId(sessionManager: {
   getLeafId(): string | null;
-  getEntry(id: string): unknown;
+  getEntry(id: string): { type: string; parentId: string | null; customType?: string } | undefined;
 }): string | null {
-  const leafId = sessionManager.getLeafId();
-  if (!leafId) {
-    return null;
-  }
-  let entry: unknown = sessionManager.getEntry(leafId);
-  let entryId: string | null = leafId;
-  const maxDepth = 32;
-  for (let depth = 0; entry && depth <= maxDepth; depth += 1) {
-    if (typeof entry !== "object") {
+  let entryId = sessionManager.getLeafId();
+  while (entryId) {
+    const entry = sessionManager.getEntry(entryId);
+    if (!entry) {
       return null;
     }
-    if ((entry as { type?: unknown }).type !== "custom") {
+    if (entry.type !== "custom" || entry.customType !== "openclaw.cache-ttl") {
       return entryId;
     }
-    const { parentId } = entry as { parentId?: string | null };
-    if (!parentId) {
-      return null;
-    }
-    entryId = parentId;
-    entry = sessionManager.getEntry(parentId);
+    entryId = entry.parentId;
   }
   return null;
 }

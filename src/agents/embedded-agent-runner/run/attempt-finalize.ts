@@ -213,10 +213,6 @@ export async function completeEmbeddedAttemptAfterTurn(
     const lifecycleState = projectAgentRunAttemptTerminal(executionState.terminal);
     if (attempt.onContextEngineTurnCandidate) {
       const admission = attempt.userTurnTranscriptRecorder?.getAdmissionReceipt();
-      // A post-turn custom entry (e.g. the cache-TTL marker) owns the leaf after a
-      // durable turn, and side artifact anchors resolve to undefined for it: the
-      // terminal identity must be the nearest materialized message entry on the
-      // leaf chain, not the leaf itself (#156425).
       const terminalEntryId = resolveTerminalMessageEntryId(sessionManager) ?? undefined;
       const terminal =
         admission && terminalEntryId

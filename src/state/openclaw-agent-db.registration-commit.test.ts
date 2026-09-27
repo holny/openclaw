@@ -1,7 +1,7 @@
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { sessionChanges } from "../sessions/session-row-changes.js";
+import { isSessionStoreTopologyChange, sessionChanges } from "../sessions/session-row-changes.js";
 import type { OpenClawAgentDatabaseRegistrationCommit } from "./openclaw-agent-db-contract.js";
 import * as registryListing from "./openclaw-agent-db-registry-listing.js";
 import { registerOpenClawAgentDatabase } from "./openclaw-agent-db-registry.js";
@@ -58,7 +58,7 @@ function createFixture() {
 function observeStores(database: ReturnType<typeof openOpenClawStateDatabase>) {
   const trace: Array<{ kind: "commit" | "stores"; inTransaction: boolean }> = [];
   const stop = sessionChanges.subscribe((change) => {
-    if ("all" in change && change.scope === "stores") {
+    if (isSessionStoreTopologyChange(change)) {
       trace.push({ kind: "stores", inTransaction: database.db.isTransaction });
     }
   });
@@ -108,7 +108,10 @@ describe("agent registration commit publication", () => {
 
     registration.begin();
     expect(before.assertCurrent).toThrow("registry changed");
+    expect(prepared.assertCurrent).toThrow("registry changed");
     const during = await prepared.read();
+    prepared.assertCurrent();
+    expect(before.assertCurrent).toThrow("registry changed");
     expect(during.result).toEqual({ status: "available", entries: [] });
     registerOpenClawAgentDatabase(fixture.target, (receipt) =>
       registration.recordCommitted(receipt),

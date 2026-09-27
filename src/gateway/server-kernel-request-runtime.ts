@@ -65,6 +65,7 @@ export async function prepareGatewayKernelRequestRuntime(params: {
         return createSessionRowProjection({
           cfg: getRuntimeConfig(),
           getConfig: getRuntimeConfig,
+          getPolicyConfig: gatewayRequestContext.getCommittedRuntimeConfig ?? getRuntimeConfig,
           getModelCatalog: () =>
             readPreparedServerMethodModelCatalogs(
               gatewayRequestContext,
@@ -85,6 +86,9 @@ export async function prepareGatewayKernelRequestRuntime(params: {
       await gatewayRequestContext.scopeUpgradeCoordinator?.close();
       const projection = await projectionReady.catch(() => undefined);
       await shutdownRuntime.flushPendingSessionsChangedEvents(gatewayRequestContext);
+      if (projection) {
+        await shutdownRuntime.drainSessionEventPublications(projection);
+      }
       projectionLifetime.detach?.();
       projection?.dispose();
     },
@@ -100,6 +104,7 @@ export async function prepareGatewayKernelRequestRuntime(params: {
   bindApprovalPublicationContext(gatewayRequestContext);
   if (!runtime.opts.updateCanary) {
     await attachInitialGatewayLifetimeSidecars({
+      scheduler: runtime.scheduler,
       chatMetadataLifecycle,
       gatewayRequestContext,
       flushPendingSessionsChangedEvents: shutdownRuntime.flushPendingSessionsChangedEvents,

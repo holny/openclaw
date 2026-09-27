@@ -58,12 +58,14 @@ export type SessionListFilterParams = {
   cfg: OpenClawConfig;
   entries: Iterable<SessionEntryPair>;
   candidatesPrepared?: boolean;
+  entriesSorted?: boolean;
   getTarget: SessionListTargetLookup;
   modelCatalog?: SessionListModelCatalog | ModelCatalogEntry[];
   opts: SessionsListParams;
   now: number;
   userProfileIdentityById?: Map<string, SessionActorProfileIdentity | undefined>;
   configuredAgentIds?: ReadonlySet<string>;
+  identityNames?: ReadonlyMap<string, string>;
   getRowContext: SessionListRowContextProvider;
   entryFilter?: (key: string, entry: SessionEntry) => boolean;
   restrictProfileReferences?: boolean;
@@ -242,13 +244,16 @@ export function* filterSessionEntries(
   const involvingActorId = normalizeOptionalString(params.involvingActorId);
 
   // The caller owns these resident entries and their prepared visibility filter.
+  const filterCandidates = params.candidatesPrepared && !opts.involvingProfileId;
   const visibleEntries: SessionEntryPair[] = [];
-  for (const pair of params.entries) {
-    if (params.entryFilter?.(...pair) ?? true) {
-      visibleEntries.push(pair);
-    }
-    if (shouldYield?.()) {
-      yield;
+  if (!filterCandidates) {
+    for (const pair of params.entries) {
+      if (params.entryFilter?.(pair[0], pair[1]) ?? true) {
+        visibleEntries.push(pair);
+      }
+      if (shouldYield?.()) {
+        yield;
+      }
     }
   }
   const allowedProfileIds =
@@ -278,19 +283,22 @@ export function* filterSessionEntries(
   }
   const selectedProfileId = profileReference?.value;
 
-  const candidateEntries = params.candidatesPrepared
-    ? visibleEntries
-    : yield* filterSessionCandidateEntries({
-        ...params,
-        opts: projectSessionListCandidateOptions(opts),
-        entries: visibleEntries,
-        getRowContext,
-      });
+  const candidateEntries = filterCandidates
+    ? params.entries
+    : params.candidatesPrepared
+      ? visibleEntries
+      : yield* filterSessionCandidateEntries({
+          ...params,
+          opts: projectSessionListCandidateOptions(opts),
+          entries: visibleEntries,
+          getRowContext,
+        });
   // Excluded rows must not participate in search or ownership resolution.
   const matchesSearch = search
     ? createSessionListSearchMatcher({
         cfg,
         search,
+        identityNames: params.identityNames,
         now,
         getTarget: params.getTarget,
         modelCatalog: params.modelCatalog instanceof Map ? params.modelCatalog : undefined,
@@ -298,12 +306,33 @@ export function* filterSessionEntries(
         projectActiveRun: params.projectActiveRun,
       })
     : undefined;
+  const matchesInvolvement = (
+    entry: SessionEntry,
+    effectiveOwner: NonNullable<ReturnType<typeof projectOwner>>["actor"] | undefined,
+    profileId: string,
+    personal: boolean,
+  ) => {
+    const state = projectSessionProfileInvolvement(entry, profileId, identities);
+    return (
+      !(personal && state?.hidden) &&
+      (Boolean(state?.lastMention || (personal && state?.hidden === false)) ||
+        (effectiveOwner?.identity?.type === "profile" &&
+          effectiveOwner.identity.id === profileId) ||
+        projectParticipants(entry, identities, cfg).has(
+          JSON.stringify({ type: "profile", id: profileId }),
+        ))
+    );
+  };
 
   for (const pair of candidateEntries) {
     if (shouldYield?.()) {
       yield;
     }
-    const [key, entry] = pair;
+    const key = pair[0];
+    const entry = pair[1];
+    if (filterCandidates && params.entryFilter?.(key, entry) === false) {
+      continue;
+    }
     if (matchesSearch && !matchesSearch(key, entry)) {
       continue;
     }
@@ -332,22 +361,9 @@ export function* filterSessionEntries(
         continue;
       }
     }
-    let participants: ReturnType<typeof projectParticipants> | undefined;
-    const matchesInvolvement = (profileId: string, personal: boolean) => {
-      const state = projectSessionProfileInvolvement(entry, profileId, identities);
-      return (
-        !(personal && state?.hidden) &&
-        (Boolean(state?.lastMention || (personal && state?.hidden === false)) ||
-          (effectiveOwner?.identity?.type === "profile" &&
-            effectiveOwner.identity.id === profileId) ||
-          (participants ??= projectParticipants(entry, identities, cfg)).has(
-            JSON.stringify({ type: "profile", id: profileId }),
-          ))
-      );
-    };
     if (
       profileRelation?.relationship === "involving" &&
-      !matchesInvolvement(profileRelation.profileId, false)
+      !matchesInvolvement(entry, effectiveOwner, profileRelation.profileId, false)
     ) {
       continue;
     }
@@ -361,7 +377,7 @@ export function* filterSessionEntries(
       continue;
     }
     // Preserve the existing viewer-independent owner facet; explicit relations still narrow it.
-    if (involvingActorId && !matchesInvolvement(involvingActorId, true)) {
+    if (involvingActorId && !matchesInvolvement(entry, effectiveOwner, involvingActorId, true)) {
       continue;
     }
     if (opts.includePeople || opts.involvingProfileId) {

@@ -28,7 +28,7 @@ import { resolveEmbeddedCliBackendDispatchEligibility } from "./cli-backend-disp
 import { createCliDispatchTranscriptRecorder } from "./cli-backend-dispatch-transcript.js";
 import type { RunEmbeddedAgentInternalParams } from "./run/internal-params.js";
 import type { RunEmbeddedAgentParams } from "./run/params.js";
-import { resolveHookModelSelection } from "./run/setup.js";
+import { buildBeforeModelResolveAttachments, resolveHookModelSelection } from "./run/setup.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 
 const log = createSubsystemLogger("agents/embedded-cli-dispatch");
@@ -128,13 +128,17 @@ async function runEmbeddedAgentViaCliBackend(
   const onAgentToolResult = params.onAgentToolResult;
   const { storePath, expectedLifecycleRevision, expectedWriterRunId } = params.sessionTarget;
   // Run before_model_resolve hooks so plugins can swap the CLI model before
-  // child process spawn (#156038). The override is honored only when it names
-  // the same backend family as the dispatch — CLI backends own their model
-  // list and a plugin must not silently redirect through a different runtime.
+  // child process spawn (#156038). The hook sees the run's logical provider
+  // and model identity, matching the embedded setup contract. The override is
+  // honored only when it dispatches to the same CLI backend as the current
+  // run — canonical refs (anthropic/<model> on claude-cli) resolve through
+  // the shared eligibility path, so same-backend swaps pass while
+  // cross-runtime pivots stay rejected.
   const hookRunner = getGlobalHookRunner();
   const modelSelection = await resolveHookModelSelection({
     prompt: params.prompt,
-    provider: dispatch.provider ?? "",
+    attachments: buildBeforeModelResolveAttachments(params.images),
+    provider: params.provider ?? "",
     modelId: params.model ?? "",
     modelSelectionLocked: params.modelSelectionLocked,
     hookRunner,
@@ -144,6 +148,8 @@ async function runEmbeddedAgentViaCliBackend(
       sessionId: params.sessionId,
       workspaceDir: params.workspaceDir,
       trigger: params.trigger,
+      modelProviderId: params.provider,
+      modelId: params.model,
       ...buildAgentHookContextChannelFields(params),
       ...buildAgentHookContextIdentityFields({
         trigger: params.trigger,
@@ -153,8 +159,19 @@ async function runEmbeddedAgentViaCliBackend(
       }),
     },
   });
+  const modelSelectionChangedByHook =
+    modelSelection.provider !== (params.provider ?? "") ||
+    modelSelection.modelId !== (params.model ?? "");
+  const overrideDispatch = modelSelectionChangedByHook
+    ? resolveEmbeddedCliBackendDispatchEligibility({
+        ...params,
+        provider: modelSelection.provider,
+        model: modelSelection.modelId,
+      })
+    : undefined;
   const sameBackendFamily =
-    modelSelection.provider === dispatch.provider ||
+    !modelSelectionChangedByHook ||
+    overrideDispatch?.provider === dispatch.provider ||
     (dispatch.provider !== undefined &&
       typeof modelSelection.provider === "string" &&
       modelSelection.provider.startsWith(`${dispatch.provider}/`));
@@ -167,7 +184,7 @@ async function runEmbeddedAgentViaCliBackend(
       `CLI dispatch applied before_model_resolve model override ${params.model} -> ${hookModel}.`,
     );
   }
-  if (!sameBackendFamily && modelSelection.provider !== dispatch.provider) {
+  if (!sameBackendFamily && modelSelectionChangedByHook) {
     log.debug(
       `CLI dispatch ignoring cross-family provider override ${dispatch.provider} -> ${modelSelection.provider}; backend family locked to ${dispatch.provider}.`,
     );

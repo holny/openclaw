@@ -770,6 +770,12 @@ describe("runEmbeddedAgentViaCliBackend before_model_resolve hook", () => {
 
     expect(callRunCliAgentArgs().model).toBe("claude-opus-4-8");
     expect(hookRunnerMock.runBeforeModelResolve).toHaveBeenCalledOnce();
+    const [hookEvent, hookContext] = hookRunnerMock.runBeforeModelResolve.mock.calls[0] ?? [];
+    expect(hookEvent).toEqual({ prompt: "recall prompt" });
+    expect(hookContext).toMatchObject({
+      modelProviderId: "claude-cli",
+      modelId: "claude-opus-4-8",
+    });
   });
 
   it("applies a same-family model override before runCliAgent", async () => {
@@ -778,6 +784,19 @@ describe("runEmbeddedAgentViaCliBackend before_model_resolve hook", () => {
       providerOverride: "claude-cli",
       modelOverride: "claude-sonnet-4-5",
     });
+
+    await runEmbeddedAgentViaCliBackendIfEligible(baseRunParams());
+
+    expect(callRunCliAgentArgs().model).toBe("claude-sonnet-4-5");
+  });
+
+  it("applies a logical-provider override that resolves to the dispatched backend", async () => {
+    hookRunnerMock.hasHooks.mockReturnValue(true);
+    hookRunnerMock.runBeforeModelResolve.mockResolvedValue({
+      providerOverride: "anthropic",
+      modelOverride: "claude-sonnet-4-5",
+    });
+    resolveCliRuntimeExecutionProvider.mockReturnValue("claude-cli");
 
     await runEmbeddedAgentViaCliBackendIfEligible(baseRunParams());
 

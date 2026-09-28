@@ -207,6 +207,15 @@ describe("heartbeat event classification", () => {
     const prompt = buildExecEventPrompt([`Exec failed (abc12345, code 7, run ${escaped})`]);
     expect(prompt).toContain(`run ${runId}) without captured stdout/stderr.`);
   });
+
+  it("keeps captured output visible when a long run id fills the prompt budget", () => {
+    const longRunId = `run-${"a".repeat(8100)}`;
+    const prompt = buildExecEventPrompt([
+      `Exec failed (abc12345, code 7, run ${longRunId}) :: exit reason: disk full`,
+    ]);
+    expect(prompt).toContain("exit reason: disk full");
+    expect(prompt).toContain("...(truncated)");
+  });
 });
 
 /** Narrow test accessor: parses one structured exec completion event and returns its run id. */

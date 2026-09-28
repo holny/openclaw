@@ -7,6 +7,7 @@ import {
 import { HEARTBEAT_TOKEN, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 
 const MAX_EXEC_EVENT_PROMPT_CHARS = 8_000;
+const MAX_DISPLAYED_RUN_ID_CHARS = 256;
 export const HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX = "heartbeat-delivery:";
 // Exec completion events are producer/pARSER-shared with bash-tools.exec-runtime.ts.
 // Grammar: "Exec <completed|failed> (<exec-slug>, (code <n>|signal <SIG>)[, run <escaped-id>])[ :: <output>]".
@@ -51,8 +52,17 @@ function parseRunSegment(segment: string): string {
   return segment.replace(/%(25|29)/g, (_match, hex: string) => (hex === "25" ? "%" : ")"));
 }
 
-function formatRunSegment(runId?: string): string {
-  return runId ? `, run ${runId}` : "";
+// Long ids stay parseable end to end, but the prompt display bounds them so a
+// pathological id cannot push the captured result past the prompt budget.
+function displayRunSegment(runId?: string): string {
+  if (!runId) {
+    return "";
+  }
+  const displayed =
+    runId.length > MAX_DISPLAYED_RUN_ID_CHARS
+      ? `${runId.slice(0, MAX_DISPLAYED_RUN_ID_CHARS)}...(truncated)`
+      : runId;
+  return `, run ${displayed}`;
 }
 
 export function isRelayableExecCompletionEvent(evt: string): boolean {
@@ -75,6 +85,11 @@ function formatExecEventPromptText(pendingEvents: string[]): {
       return trimmed ? [trimmed] : [];
     }
     if (parsed.output) {
+      if (parsed.runId && parsed.runId.length > MAX_DISPLAYED_RUN_ID_CHARS) {
+        return [
+          `Exec ${parsed.action} (${parsed.id}, ${parsed.result}${displayRunSegment(parsed.runId)}) :: ${parsed.output}`,
+        ];
+      }
       return [parsed.raw];
     }
     if (parsed.succeeded) {
@@ -82,7 +97,7 @@ function formatExecEventPromptText(pendingEvents: string[]): {
     }
     hasMissingOutputFailure = true;
     return [
-      `Exec ${parsed.action} (${parsed.id}, ${parsed.result}${formatRunSegment(parsed.runId)}) without captured stdout/stderr.`,
+      `Exec ${parsed.action} (${parsed.id}, ${parsed.result}${displayRunSegment(parsed.runId)}) without captured stdout/stderr.`,
     ];
   });
   return { text: lines.join("\n").trim(), hasMissingOutputFailure };

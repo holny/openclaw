@@ -3,9 +3,12 @@ import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalAgentRuntimeId } from "../../agents/agent-runtime-id.js";
 import { clearBootstrapSnapshotOnSessionBoundary } from "../../agents/bootstrap-cache.js";
 import type { LiveSessionModelSelection } from "../../agents/live-model-switch.js";
+import { applyModelRuntimeDirective } from "../../auto-reply/reply/directive-handling.model-runtime.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
-import { readTranscriptStatsSync } from "../../config/sessions/session-accessor.js";
+import { resolveSessionWorkStartError } from "../../config/sessions/lifecycle.js";
+import { hasSessionTranscriptEventsSync } from "../../config/sessions/session-accessor.js";
+import type { SessionResetBoundaryWrite } from "../../config/sessions/session-accessor.lifecycle-types.js";
 import {
   buildSessionCreationStamp,
   inheritSessionCreationPolicy,
@@ -13,7 +16,10 @@ import {
 import type { SessionCreatedActor } from "../../config/sessions/session-entry-provenance.js";
 import { mergeSessionSnapshotChanges } from "../../config/sessions/session-snapshot-merge.js";
 import { isCronSessionKey } from "../../sessions/session-key-utils.js";
-import { isSessionWorkAdmissionActive } from "../../sessions/session-lifecycle-admission.js";
+import {
+  beginSessionWorkAdmission,
+  isSessionWorkAdmissionActive,
+} from "../../sessions/session-lifecycle-admission.js";
 import type { SkillSnapshot } from "../../skills/types.js";
 import {
   normalizeCronScheduledToolCallerOrigin,
@@ -29,7 +35,7 @@ import type {
   CronToolsAllowExecTargetRequirement,
 } from "../scheduled-tool-policy.js";
 import { setSessionRuntimeModel } from "./run.runtime.js";
-import type { resolveCronSession } from "./session.js";
+import { loadCronSessionEntryLatest, type resolveCronSession } from "./session.js";
 
 type MutableSessionStore = Record<string, SessionEntry>;
 
@@ -55,9 +61,9 @@ export type CronLiveSelection = LiveSessionModelSelection;
  * returns the full entry to commit. `fallbackEntry` seeds creation when the
  * row does not exist yet.
  */
-type PersistSessionEntry = (params: {
+export type CronSessionRowWriter = (params: {
   fallbackEntry: SessionEntry;
-  resetBoundaryReason?: "cron-stale";
+  resetBoundary?: SessionResetBoundaryWrite;
   sessionKey: string;
   storePath: string;
   update: (currentEntry: SessionEntry | undefined) => SessionEntry;
@@ -94,6 +100,48 @@ export function resolveCronLifecycleRevisionIdentity(lifecycleRevision: string):
   return `cron-lifecycle-revision:${lifecycleRevision}`;
 }
 
+/** Claim the captured session generation before asynchronous run preparation. */
+export async function beginCronSessionWorkAdmission(params: {
+  cronSession: MutableCronSession;
+  agentSessionKey: string;
+  runSessionKey: string;
+  signal?: AbortSignal;
+  onInterrupt: () => void;
+}) {
+  const { cronSession, agentSessionKey, runSessionKey } = params;
+  const initialSessionEntry = cronSession.initialSessionEntry;
+  // Claim before async model prep so maintenance cannot delete this session generation.
+  return await beginSessionWorkAdmission({
+    scope: cronSession.storePath,
+    identities: [
+      agentSessionKey,
+      initialSessionEntry?.sessionId,
+      cronSession.sessionEntry.sessionId,
+      resolveCronLifecycleRevisionIdentity(cronSession.lifecycleRevision),
+      runSessionKey,
+    ],
+    signal: params.signal,
+    onInterrupt: params.onInterrupt,
+    assertAllowed: () => {
+      const currentEntry = loadCronSessionEntryLatest(cronSession.storePath, agentSessionKey);
+      const changed = initialSessionEntry
+        ? !currentEntry ||
+          !isDeepStrictEqual(
+            projectCronOwnershipFields(currentEntry),
+            projectCronOwnershipFields(initialSessionEntry),
+          )
+        : Boolean(currentEntry);
+      if (changed) {
+        throw new CronSessionLifecycleClaimError(agentSessionKey);
+      }
+      const archivedSessionError = resolveSessionWorkStartError(agentSessionKey, currentEntry);
+      if (archivedSessionError) {
+        throw new CronSessionLifecycleClaimError(agentSessionKey, archivedSessionError);
+      }
+    },
+  });
+}
+
 function cronTranscriptExists(params: {
   entry: SessionEntry;
   sessionKey: string;
@@ -104,13 +152,11 @@ function cronTranscriptExists(params: {
     return false;
   }
   try {
-    return (
-      readTranscriptStatsSync({
-        sessionId,
-        sessionKey: params.sessionKey,
-        storePath: params.storePath,
-      }).eventCount > 0
-    );
+    return hasSessionTranscriptEventsSync({
+      sessionId,
+      sessionKey: params.sessionKey,
+      storePath: params.storePath,
+    });
   } catch {
     return false;
   }
@@ -121,7 +167,7 @@ function normalizeSessionField(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-export function projectCronOwnershipFields(entry: SessionEntry): Partial<SessionEntry> {
+function projectCronOwnershipFields(entry: SessionEntry): Partial<SessionEntry> {
   const projected: Partial<SessionEntry> = { ...entry };
   delete projected.label;
   delete projected.pinnedAt;
@@ -147,7 +193,8 @@ export function createPersistCronSessionEntry(params: {
   agentSessionKey: string;
   createdActor?: SessionCreatedActor;
   sandbox?: "required";
-  persistSessionEntry: PersistSessionEntry;
+  workspaceDir: string;
+  persistSessionEntry: CronSessionRowWriter;
 }): PersistCronSessionEntry {
   return async (assertCommitAllowed, liveEntry = params.cronSession.sessionEntry) => {
     const resetBoundaryPending = params.cronSession.resetBoundaryPending !== undefined;
@@ -172,7 +219,15 @@ export function createPersistCronSessionEntry(params: {
       sessionKey: params.agentSessionKey,
       fallbackEntry: persistedEntry,
       assertCommitAllowed,
-      ...(resetBoundaryPending ? { resetBoundaryReason: "cron-stale" as const } : {}),
+      ...(resetBoundaryPending
+        ? {
+            resetBoundary: {
+              context: "preserve-tail",
+              reason: "cron-stale",
+              cwd: params.workspaceDir,
+            } satisfies SessionResetBoundaryWrite,
+          }
+        : {}),
       update: (currentEntry) => {
         if (!currentEntry) {
           const creationStamp = buildSessionCreationStamp({
@@ -272,7 +327,7 @@ export function createCronRunContinuationSession(params: {
     sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
     requireExplicitMessageTarget?: boolean;
   };
-  persistSessionEntry: PersistSessionEntry;
+  persistSessionEntry: CronSessionRowWriter;
 }): CronRunContinuationSession {
   const scheduledToolPolicy =
     params.toolsAllow === undefined
@@ -507,11 +562,12 @@ export function syncCronSessionLiveSelection(params: {
   if (previousRuntime !== nextRuntime) {
     clearCronContextOwnerState(params.entry);
   }
-  if (params.liveSelection.agentRuntimeOverride) {
-    params.entry.agentRuntimeOverride = params.liveSelection.agentRuntimeOverride;
-  } else {
-    delete params.entry.agentRuntimeOverride;
-  }
+  applyModelRuntimeDirective(
+    params.entry,
+    params.liveSelection.agentRuntimeOverride
+      ? { kind: "set", runtime: params.liveSelection.agentRuntimeOverride }
+      : { kind: "clear" },
+  );
   if (params.liveSelection.authProfileId) {
     const source =
       params.liveSelection.authProfileIdSource ??

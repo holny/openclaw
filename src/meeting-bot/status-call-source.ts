@@ -25,7 +25,12 @@ export function createMeetingStatusCallSource(options: MeetingStatusCallSourceOp
   let audioOutputDeviceLabel;
   let audioOutputRouteError;
   let audioOutputRouteRetryable = false;
-  if (inCall && allowMicrophone && navigator.mediaDevices?.enumerateDevices) {
+  const remoteCapture = window.__openclawMeetingRemoteAudio;
+  if (remoteCapture && remoteCapture.sessionId === sessionId && remoteCapture.isCurrent()) {
+    if (canMutateSession) remoteCapture.scan();
+    audioOutputRouted = remoteCapture.isCurrent();
+    audioOutputDeviceLabel = "Isolated browser playback";
+  } else if (inCall && allowMicrophone && navigator.mediaDevices?.enumerateDevices) {
     const media = [...document.querySelectorAll("audio, video")].filter(
       (element) =>
         typeof element.setSinkId === "function" &&
@@ -337,8 +342,6 @@ export function createMeetingStatusCallSource(options: MeetingStatusCallSourceOp
     if (!inCall && !active) return undefined;
     if (!active && !canMutateSession) return undefined;
     if (!active) {
-      if (active?.settleTimer !== undefined) clearTimeout(active.settleTimer);
-      active?.observer?.disconnect?.();
       window[${captionsGlobal}] = {
         sessionId,
         identity: expectedIdentity,
@@ -362,17 +365,14 @@ export function createMeetingStatusCallSource(options: MeetingStatusCallSourceOp
     if (!clean) return undefined;
     return { speaker: cleanSpeaker || undefined, text: clean };
   };
-  const captionRowIdentity = (row) =>
+  const captionRowIdentity = (row) => {
     // aria-posinset identifies the logical caption item across virtual-list
     // rerenders. DOM ids and data indexes can belong to the recycled element.
-    ["aria-posinset"]
-      .map((name) => {
-        const value = row?.getAttribute?.(name);
-        return typeof value === "string" && value.trim()
-          ? name + ":" + value.trim()
-          : undefined;
-      })
-      .find(Boolean);
+    const value = row?.getAttribute?.("aria-posinset");
+    return typeof value === "string" && value.trim()
+      ? "aria-posinset:" + value.trim()
+      : undefined;
+  };
   const sameCaptionUtterance = (prior, current) => {
     if (prior.rowIdentity || current.rowIdentity) {
       return Boolean(
@@ -537,11 +537,7 @@ export function createMeetingStatusCallSource(options: MeetingStatusCallSourceOp
     const now = Date.now();
     let captionChanged = false;
     for (const row of parsedRows) {
-      const priorIndex = unmatchedPrevious.findIndex((candidate) =>
-        row.rowIdentity
-          ? candidate.rowIdentity === row.rowIdentity
-          : candidate.node === row.node
-      );
+      const priorIndex = unmatchedPrevious.findIndex((candidate) => sameCaptionRow(candidate, row));
       const candidate = priorIndex >= 0 ? unmatchedPrevious[priorIndex] : undefined;
       const prior = candidate && sameCaptionUtterance(candidate, row)
         ? unmatchedPrevious.splice(priorIndex, 1)[0]

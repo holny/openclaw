@@ -1,3 +1,4 @@
+import { availableWorkerSlots } from "../../../../src/shared/node-list-parse.js";
 import { t } from "../../i18n/index.ts";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import type { DraftEnvironment } from "./discovery.ts";
@@ -11,10 +12,12 @@ export type DevicePlacementOption = Readonly<
     deviceId: string;
     label: string;
     subtitle?: string;
+    hideDetails?: boolean;
+    remediation?: "enable-session-hosting" | "update-device";
     facts: readonly string[];
     selectable: boolean;
     disabledReason?: string;
-  } & Pick<DraftEnvironment, "workerSlots" | "capabilities" | "invocableCommands">
+  } & Pick<DraftEnvironment, "platform" | "workerSlots" | "capabilities" | "invocableCommands">
 >;
 
 export type DevicePlacementRequirement = Readonly<{
@@ -65,7 +68,9 @@ function unavailableReason(
   if (!environment.workerSlots) {
     return t("newSession.deviceCapacityUnavailable");
   }
-  return environment.workerSlots.available === 0 ? t("newSession.deviceNoSlots") : undefined;
+  return availableWorkerSlots(environment.workerSlots) === 0
+    ? t("newSession.deviceNoSlots")
+    : undefined;
 }
 
 /** One projection owns device presentation, restore eligibility, and submit eligibility. */
@@ -100,6 +105,18 @@ export function projectDevicePlacements(
         {
           deviceId,
           label: environment.label ?? deviceId,
+          platform: environment.platform,
+          hideDetails:
+            !placementDisabledReason &&
+            environment.status === "unavailable" &&
+            !environment.issues?.length,
+          remediation: placementDisabledReason
+            ? undefined
+            : environment.issues?.some((issue) => issue.code === "update-required")
+              ? "update-device"
+              : environment.status === "available" && environment.sessionHost !== true
+                ? "enable-session-hosting"
+                : undefined,
           facts: placementDisabledReason ? [placementDisabledReason] : visibleFacts,
           workerSlots: environment.workerSlots,
           capabilities: environment.capabilities,
@@ -148,4 +165,22 @@ export function resolveAutomaticDevicePlacementDisabledReason(
   return devices.some((device) => device.selectable)
     ? undefined
     : devices.find((device) => sessionHostIds.has(`node:${device.deviceId}`))?.disabledReason;
+}
+
+export function resolveSelectedDevicePlacement(
+  devices: readonly DevicePlacementOption[],
+  environments: readonly DraftEnvironment[] | null,
+  selection: Readonly<{ deviceId: string; autoDevice: boolean }>,
+) {
+  const selected = devices.find((device) => device.deviceId === selection.deviceId);
+  return {
+    ready: selection.autoDevice
+      ? devices.some((device) => device.selectable)
+      : !selection.deviceId || selected?.selectable === true,
+    disabledReason: selection.autoDevice
+      ? resolveAutomaticDevicePlacementDisabledReason(environments, devices)
+      : !selection.deviceId
+        ? undefined
+        : (selected?.disabledReason ?? t("newSession.nodeUnavailable")),
+  };
 }

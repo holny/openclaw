@@ -193,6 +193,20 @@ describe("heartbeat event classification", () => {
     );
     expect(runId).toBe("f1a2b3c4-5d6e");
   });
+
+  it("keeps run ids beyond 128 characters in the completion grammar", () => {
+    const longRunId = `run-${"a".repeat(140)}`;
+    const prompt = buildExecEventPrompt([`Exec failed (abc12345, code 7, run ${longRunId})`]);
+    expect(prompt).toContain(`run ${longRunId}) without captured stdout/stderr.`);
+  });
+
+  it("round-trips run ids containing percent escapes", () => {
+    const runId = "request%29-and-100%25-done)";
+    // Mirrors the producer: % becomes %25 first, then ) becomes %29.
+    const escaped = runId.replaceAll("%", "%25").replaceAll(")", "%29");
+    const prompt = buildExecEventPrompt([`Exec failed (abc12345, code 7, run ${escaped})`]);
+    expect(prompt).toContain(`run ${runId}) without captured stdout/stderr.`);
+  });
 });
 
 /** Narrow test accessor: parses one structured exec completion event and returns its run id. */

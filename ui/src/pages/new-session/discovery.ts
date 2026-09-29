@@ -9,8 +9,11 @@ import type {
   RequiredNodeCommand,
   RuntimeTargetIssue,
   WorkerExecutionMode,
+  WorkerMachineOption,
+  WorkerOperatingSystem,
   WorkerSlotSummary,
 } from "../../../../packages/gateway-protocol/src/schema/environments.ts";
+import { parseWorkerSlotSummary } from "../../../../src/shared/node-list-parse.js";
 
 export type DraftBranches = {
   repoRoot: string;
@@ -33,27 +36,15 @@ export type DraftRepositoryState =
 export type DraftCloudProfile = {
   id: string;
   providerId: string;
+  providerDisplayId?: string;
   trust?: "persistent" | "disposable";
   executionModes?: readonly WorkerExecutionMode[];
   machines?: DraftMachineOption[];
   operatingSystems?: DraftOperatingSystem[];
 };
 
-export type DraftOperatingSystem = {
-  id: string;
-  label: string;
-  default?: boolean;
-  disabledReason?: string;
-};
-
-export type DraftMachineOption = {
-  id: string;
-  label: string;
-  os?: string;
-  cpu?: number;
-  memoryGb?: number;
-  default?: boolean;
-};
+export type DraftOperatingSystem = WorkerOperatingSystem;
+export type DraftMachineOption = WorkerMachineOption;
 
 export type DraftEnvironment = {
   id: string;
@@ -129,6 +120,7 @@ export function readDraftCloudProfiles(value: unknown): DraftCloudProfile[] {
       const profile = raw as {
         id?: unknown;
         providerId?: unknown;
+        providerDisplayId?: unknown;
         trust?: unknown;
         executionModes?: unknown;
         machines?: unknown;
@@ -149,6 +141,11 @@ export function readDraftCloudProfiles(value: unknown): DraftCloudProfile[] {
         {
           id,
           providerId,
+          ...(typeof profile.providerDisplayId === "string" &&
+          /^[a-z][a-z0-9-]{0,63}$/.test(profile.providerDisplayId) &&
+          profile.providerDisplayId.trim() === profile.providerDisplayId
+            ? { providerDisplayId: profile.providerDisplayId }
+            : {}),
           trust,
           ...(Object.hasOwn(profile, "executionModes")
             ? { executionModes: readDraftCloudProfileExecutionModes(profile.executionModes) }
@@ -251,26 +248,6 @@ function isEnvironmentStatus(value: unknown): value is EnvironmentStatus {
   return typeof value === "string" && ENVIRONMENT_STATUSES.has(value);
 }
 
-function isSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value);
-}
-
-function readWorkerSlots(value: unknown): WorkerSlotSummary | undefined {
-  if (
-    !isRecord(value) ||
-    Object.keys(value).some((key) => key !== "total" && key !== "available") ||
-    !isSafeInteger(value.total) ||
-    !isSafeInteger(value.available)
-  ) {
-    return undefined;
-  }
-  const total = value.total;
-  const available = value.available;
-  return total >= 1 && total <= 1_024 && available >= 0 && available <= total
-    ? { total, available }
-    : undefined;
-}
-
 function readRequiredNodeCommand(value: unknown): RequiredNodeCommand | undefined {
   if (!isRecord(value) || Object.keys(value).some((key) => key !== "command" && key !== "state")) {
     return undefined;
@@ -339,7 +316,7 @@ export function readDraftEnvironments(value: unknown): DraftEnvironment[] {
       const lastSeenAtMs = normalizeTimestamp(environment.lastSeenAtMs);
       const lastSeenReason = normalizeOptionalString(environment.lastSeenReason);
       const issues = readRuntimeTargetIssues(environment.issues);
-      const workerSlots = readWorkerSlots(environment.workerSlots);
+      const workerSlots = parseWorkerSlotSummary(environment.workerSlots);
       return [
         {
           id,

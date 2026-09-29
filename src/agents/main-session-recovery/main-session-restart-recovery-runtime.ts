@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import { waitForAbortSignal } from "../../infra/abort-signal.js";
@@ -91,6 +92,9 @@ export async function recoverRestartAbortedMainSessions(params: {
     if (params.excludedStoreTargets?.has(restartRecoveryStoreTargetKey(target))) {
       continue;
     }
+    // Recover stores one macrotask apart: a long recovery chain must not starve
+    // timers queued before startup recovery began (#149935).
+    await setImmediate();
     const storeResult = await recoverStore({
       ...params,
       storePath: target.storePath,

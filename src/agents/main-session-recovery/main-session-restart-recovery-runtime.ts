@@ -95,6 +95,11 @@ export async function recoverRestartAbortedMainSessions(params: {
     // Recover stores one macrotask apart: a long recovery chain must not starve
     // timers queued before startup recovery began (#149935).
     await setImmediate();
+    // Stop during the yield must skip the next store's synchronous load: the
+    // store probe itself blocks until its own first cancellation check (#149935 Rev 2).
+    if (params.shouldContinue?.() === false) {
+      return result;
+    }
     const storeResult = await recoverStore({
       ...params,
       storePath: target.storePath,

@@ -11,7 +11,9 @@ import {
   createSessionEntry,
   type SessionEntryFixture,
 } from "../subagent-test-fixtures.test-helpers.js";
+import { recoverRestartAbortedMainSessions } from "./main-session-restart-recovery-runtime.js";
 import { discoverRestartRecoveryStoreTargets } from "./main-session-restart-recovery-shared.js";
+import * as recoveryStore from "./main-session-restart-recovery-store.js";
 
 function runningMainSessionEntry(
   overrides: Partial<SessionEntryFixture> = {},
@@ -81,6 +83,50 @@ describe("restart recovery discovery yield", () => {
         storePath: path.join(sessionsDirB, "sessions.json"),
       });
       probeSpy.mockRestore();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels between store probes without loading the next store", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-recovery-cancel-"));
+    try {
+      const sessionsDirA = path.join(tmpDir, "agents", "cancel-a", "sessions");
+      const sessionsDirB = path.join(tmpDir, "agents", "cancel-b", "sessions");
+      await fs.mkdir(sessionsDirA, { recursive: true });
+      await fs.mkdir(sessionsDirB, { recursive: true });
+      const writeMainSession = async (sessionsDir: string, sessionKey: string) => {
+        await sessionAccessor.replaceSessionEntry(
+          { storePath: path.join(sessionsDir, "sessions.json"), sessionKey },
+          runningMainSessionEntry(),
+        );
+      };
+      await writeMainSession(sessionsDirA, "agent:cancel-a:main");
+      await writeMainSession(sessionsDirB, "agent:cancel-b:main");
+      const cfg = {
+        agents: { list: [{ id: "cancel-a", default: true }, { id: "cancel-b" }] },
+      } as OpenClawConfig;
+
+      const storeSpy = vi.spyOn(recoveryStore, "recoverStore");
+      let shouldContinueCalls = 0;
+      // Call 1: the first target's pre-yield check passes; call 2 is the
+      // post-yield recheck, so store 2's synchronous load must never happen
+      // and store 1's recovery must be skipped entirely (#149935 Rev 2).
+      const result = await recoverRestartAbortedMainSessions({
+        cfg,
+        stateDir: tmpDir,
+        gatewayRuntime: {
+          dispatchSessionMethod: vi.fn(),
+          dispatchAgent: vi.fn(),
+          waitForAgent: vi.fn(),
+          sendRecoveryNotice: vi.fn(),
+        } as unknown as Parameters<typeof recoverRestartAbortedMainSessions>[0]["gatewayRuntime"],
+        shouldContinue: () => ++shouldContinueCalls <= 1,
+      });
+
+      expect(storeSpy).toHaveBeenCalledTimes(0);
+      expect(result).toEqual({ started: 0, settled: 0, failed: 0, skipped: 0 });
+      storeSpy.mockRestore();
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }

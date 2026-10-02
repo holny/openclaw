@@ -45,6 +45,7 @@ export async function discoverRestartRecoveryStoreTargets(params: {
   cfg?: OpenClawConfig;
   stateDir?: string;
   statuses?: Parameters<typeof hasSessionEntriesByStatusReadOnly>[1];
+  shouldContinue?: () => boolean;
 }): Promise<SessionStoreTarget[]> {
   const storeTargets: SessionStoreTarget[] = [];
   const stateDir = params.stateDir ?? resolveStateDir(process.env);
@@ -87,6 +88,11 @@ export async function discoverRestartRecoveryStoreTargets(params: {
   const eligibleTargets: SessionStoreTarget[] = [];
   for (const target of storeTargets) {
     await setImmediate();
+    // Stop during the yield must skip the remaining probes, mirroring the
+    // recovery loop's post-yield recheck (#149935 Rev 3).
+    if (params.shouldContinue?.() === false) {
+      break;
+    }
     if (
       readAgentDatabaseAdmissionRefusal(target.agentId, { env }) ||
       (params.statuses && !hasSessionEntriesByStatusReadOnly({ ...target, env }, params.statuses))

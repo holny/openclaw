@@ -131,4 +131,42 @@ describe("restart recovery discovery yield", () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("stops discovery between store probes when cancellation lands", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-recovery-dstop-"));
+    try {
+      const sessionsDirA = path.join(tmpDir, "agents", "dstop-a", "sessions");
+      const sessionsDirB = path.join(tmpDir, "agents", "dstop-b", "sessions");
+      await fs.mkdir(sessionsDirA, { recursive: true });
+      await fs.mkdir(sessionsDirB, { recursive: true });
+      const writeMainSession = async (sessionsDir: string, sessionKey: string) => {
+        await sessionAccessor.replaceSessionEntry(
+          { storePath: path.join(sessionsDir, "sessions.json"), sessionKey },
+          runningMainSessionEntry(),
+        );
+      };
+      await writeMainSession(sessionsDirA, "agent:dstop-a:main");
+      await writeMainSession(sessionsDirB, "agent:dstop-b:main");
+      const cfg = {
+        agents: { list: [{ id: "dstop-a", default: true }, { id: "dstop-b" }] },
+      } as OpenClawConfig;
+
+      const probeSpy = vi.spyOn(sessionAccessor, "hasSessionEntriesByStatusReadOnly");
+      let shouldContinueCalls = 0;
+      // Call 1 after the first yield passes; call 2 after the second yield
+      // cancels, so store 2's probe must never run (#149935 Rev 3).
+      const storeTargets = await discoverRestartRecoveryStoreTargets({
+        cfg,
+        stateDir: tmpDir,
+        statuses: ["running"],
+        shouldContinue: () => ++shouldContinueCalls <= 1,
+      });
+
+      expect(probeSpy).toHaveBeenCalledTimes(1);
+      expect(storeTargets).toHaveLength(1);
+      probeSpy.mockRestore();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

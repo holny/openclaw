@@ -3,6 +3,7 @@ import {
   errorShape,
   GatewayErrorDetailCodes,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { disposeAllSessionMcpRuntimes } from "../../agents/agent-bundle-mcp-manager-api.js";
 import { updateMcpAppModelContext } from "../../agents/mcp-app-model-context.js";
 import { buildMcpAppSandboxPath } from "../../agents/mcp-app-sandbox.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -92,6 +93,15 @@ async function handle(
 }
 
 export const mcpAppHandlers: GatewayRequestHandlers = {
+  "mcp.reloadRuntimes": async ({ respond }) => {
+    await handle(respond, async () => {
+      // The Gateway process owns its own cached session MCP runtimes; the CLI's
+      // `mcp reload` can only dispose CLI-local ones, so it dispatches here to
+      // invalidate the Gateway side across the process boundary (#164642).
+      await disposeAllSessionMcpRuntimes();
+      return { ok: true };
+    });
+  },
   "mcp.app.view": async ({ respond, params, context, client }) => {
     await handle(respond, async () => {
       const active = await resolveMcpAppActiveView({

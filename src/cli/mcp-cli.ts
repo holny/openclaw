@@ -32,6 +32,7 @@ import { parseConfigValue } from "../auto-reply/reply/config-value.js";
 import { listConfiguredMcpServers } from "../config/mcp-config.js";
 import type { McpCodexToolApprovalMode } from "../config/types.mcp.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { callGatewayCli } from "../gateway/call.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
   startOAuthLoopbackCallbackServer,
@@ -1372,10 +1373,32 @@ export function registerMcpCli(program: Command) {
     .command("reload")
     .description("Dispose cached MCP runtimes so new config is used on the next turn")
     .action(async () => {
+      let gatewayDisposed = false;
+      let gatewayError: string | undefined;
+      try {
+        // The Gateway process owns its own cached session MCP runtimes; the
+        // CLI-local dispose below cannot reach them (#164642).
+        await callGatewayCli({
+          method: "mcp.reloadRuntimes",
+          params: {},
+          timeoutMs: 10_000,
+        });
+        gatewayDisposed = true;
+      } catch (err) {
+        gatewayError = err instanceof Error ? err.message : String(err);
+      }
       await disposeAllSessionMcpRuntimes();
-      defaultRuntime.log(
-        "Disposed cached MCP runtimes. Active agents use new MCP config on their next runtime build.",
-      );
+      if (gatewayDisposed) {
+        defaultRuntime.log(
+          "Disposed cached MCP runtimes (Gateway + CLI). Active agents use new MCP config on their next runtime build.",
+        );
+      } else {
+        defaultRuntime.log(
+          gatewayError
+            ? `Disposed cached MCP runtimes (CLI only; Gateway dispose failed: ${gatewayError}). Active agents use new MCP config on their next runtime build.`
+            : "Disposed cached MCP runtimes. Active agents use new MCP config on their next runtime build.",
+        );
+      }
     });
 
   mcp

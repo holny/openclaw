@@ -53,22 +53,14 @@ import {
   resolveConfiguredRealtimeVoiceProvider,
   resolveRealtimeVoiceProviderCapabilities,
 } from "../../../talk/provider-resolver.js";
-import {
-  canonicalizeSpeechProviderId,
-  getSpeechProvider,
-  listSpeechProviders,
-} from "../../../tts/provider-registry.js";
+import { canonicalizeSpeechProviderId, getSpeechProvider } from "../../../tts/provider-registry.js";
 import {
   withSpeakerSelectionCompat,
   withSpeakerSelectionFallbackCompat,
 } from "../../../tts/speaker.js";
 import { CODE_HEAVY_SPOKEN_FALLBACK, isCodeHeavySpeechText } from "../../../tts/speech-text.js";
 import { synthesizeTalkSpeech } from "../../../tts/tts-synthesis.js";
-import {
-  getResolvedSpeechProviderConfig,
-  resolveTtsConfig,
-  type TtsDirectiveOverrides,
-} from "../../../tts/tts.js";
+import type { TtsDirectiveOverrides } from "../../../tts/tts.js";
 import { getVoiceProviderConfig, providerMatchesId } from "../../../tts/voice-models.js";
 import { ADMIN_SCOPE, READ_SCOPE, TALK_SECRETS_SCOPE } from "../../operator-scopes.js";
 import { respondUnavailable } from "../../server-methods/response.js";
@@ -83,6 +75,7 @@ import {
   listTalkTranscriptionProviders,
   resolveConfiguredRealtimeTranscriptionProvider,
 } from "../session-config.js";
+import { buildTalkCatalogSpeechSection } from "./catalog-speech.js";
 import { talkClientHandlers } from "./client.js";
 import { talkSessionHandlers } from "./session.js";
 import { talkVoiceHandlers } from "./voice.js";
@@ -282,65 +275,17 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
   );
   const activeRealtimeProvider = realtimeSelection.activeProvider;
   const speechAvailable = isSecretOwnerAvailable("capability", "talk:speech");
-  // Clients key stt-tts availability off speech readiness the same way they key
-  // dictation off transcription.ready: a usable speech provider means Talk can
-  // run in stt-tts mode even when no realtime voice provider is configured
-  // (#165363).
-  const speechReady =
-    Boolean(activeSpeechProvider) &&
-    speechAvailable &&
-    configuredOrFalse(() => {
-      const setup = buildTalkTtsConfig(config);
-      return !("error" in setup);
-    });
 
   return {
     modes: ["realtime", "stt-tts", "transcription"],
     transports: ["webrtc", "provider-websocket", "gateway-relay", "managed-room"],
     brains: ["agent-consult", "direct-tools", "none"],
-    speech: {
-      ready: speechReady,
-      ...(activeSpeechProvider ? { activeProvider: activeSpeechProvider } : {}),
-      providers: listSpeechProviders(config).map((provider) => {
-        const entry: Record<string, unknown> = {
-          id: provider.id,
-          label: provider.label,
-          configured:
-            speechAvailable &&
-            configuredOrFalse(() => {
-              const setup =
-                provider.id === activeSpeechProvider ? buildTalkTtsConfig(config) : undefined;
-              const speechConfig = setup && !("error" in setup) ? setup.cfg : config;
-              const effectiveTts = resolveTtsConfig(speechConfig);
-              return provider.isConfigured({
-                cfg: speechConfig,
-                providerConfig: getResolvedSpeechProviderConfig(
-                  effectiveTts,
-                  provider.id,
-                  speechConfig,
-                ),
-                timeoutMs: effectiveTts.timeoutMs,
-              });
-            }),
-          modes: ["stt-tts"],
-          // stt-tts sessions run through the managed-room transport; the
-          // session-create path rejects every other transport for this mode
-          // (#165363).
-          transports: ["managed-room"],
-          brains: ["agent-consult"],
-        };
-        if (provider.models) {
-          entry.models = [...provider.models];
-        }
-        if (provider.aliases?.length) {
-          entry.aliases = [...provider.aliases];
-        }
-        if (provider.voices) {
-          entry.voices = [...provider.voices];
-        }
-        return entry;
-      }),
-    },
+    speech: buildTalkCatalogSpeechSection({
+      config,
+      activeSpeechProvider,
+      speechAvailable,
+      buildTtsSetup: buildTalkTtsConfig,
+    }),
     transcription: {
       ready: transcriptionSelection.ready,
       ...(activeTranscriptionProvider ? { activeProvider: activeTranscriptionProvider } : {}),

@@ -37,6 +37,7 @@ import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { prepareTalkAgentConsultTranscript } from "../agent-consult-transcript.js";
 import { buildTalkRealtimeConfig } from "../session-config.js";
 import { preparedTalkSessionProjection as projection } from "../test-helpers.js";
+import { EXPECTED_ELEVENLABS_SPEECH_SECTION } from "./catalog-speech.test-support.js";
 import { forgetLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
 import { talkConfigAccentCases } from "./config-accent.test-support.js";
 import {
@@ -575,23 +576,7 @@ describe("talk.catalog handler", () => {
           modes: ["realtime", "stt-tts", "transcription"],
           transports: ["webrtc", "provider-websocket", "gateway-relay", "managed-room"],
           brains: ["agent-consult", "direct-tools", "none"],
-          speech: {
-            ready: true,
-            activeProvider: "elevenlabs",
-            providers: [
-              {
-                id: "elevenlabs",
-                label: "ElevenLabs",
-                aliases: ["11labs"],
-                configured: true,
-                modes: ["stt-tts"],
-                transports: ["managed-room"],
-                brains: ["agent-consult"],
-                models: ["eleven_flash_v2_5"],
-                voices: ["voice-1"],
-              },
-            ],
-          },
+          speech: EXPECTED_ELEVENLABS_SPEECH_SECTION,
           transcription: {
             ready: true,
             activeProvider: "openai",

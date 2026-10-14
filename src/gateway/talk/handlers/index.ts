@@ -284,14 +284,34 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
   const speechAvailable = isSecretOwnerAvailable("capability", "talk:speech");
   // Clients key stt-tts availability off speech readiness the same way they key
   // dictation off transcription.ready: a usable speech provider means Talk can
-  // run in stt-tts mode even when no realtime voice provider is configured
-  // (#165363).
+  // run in stt-tts mode even when no realtime voice provider is configured.
+  // The ready flag must match the selected provider row's configured state —
+  // buildTalkTtsConfig assembles a config even without credentials, so the
+  // provider's own isConfigured check decides (#165363 Rev 2).
   const speechReady =
     Boolean(activeSpeechProvider) &&
     speechAvailable &&
     configuredOrFalse(() => {
       const setup = buildTalkTtsConfig(config);
-      return !("error" in setup);
+      if ("error" in setup) {
+        return false;
+      }
+      const speechConfig = setup.cfg;
+      const effectiveTts = resolveTtsConfig(speechConfig);
+      const provider = listSpeechProviders(config).find(
+        (candidate) => candidate.id === activeSpeechProvider,
+      );
+      return (
+        provider?.isConfigured({
+          cfg: speechConfig,
+          providerConfig: getResolvedSpeechProviderConfig(
+            effectiveTts,
+            activeSpeechProvider,
+            speechConfig,
+          ),
+          timeoutMs: effectiveTts.timeoutMs,
+        }) === true
+      );
     });
 
   return {

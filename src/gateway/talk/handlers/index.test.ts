@@ -485,9 +485,7 @@ describe("talk.catalog handler", () => {
     };
     // speech.ready must not claim stt-tts is usable while the row says the
     // provider cannot synthesize (#165363 Rev 2).
-    expect(catalog.speech.providers.find((p) => p.id === "elevenlabs")?.configured).toBe(
-      false,
-    );
+    expect(catalog.speech.providers.find((p) => p.id === "elevenlabs")?.configured).toBe(false);
     expect(catalog.speech.ready).toBe(false);
   });
 

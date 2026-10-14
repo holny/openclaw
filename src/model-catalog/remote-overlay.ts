@@ -21,7 +21,7 @@ import {
   isRemoteCatalogSourceActive,
   isRemoteModelCatalogRefreshEnabled,
 } from "./remote-config.js";
-import { readRemoteModelCatalog, readRemoteModelCatalogAsync } from "./remote-store.js";
+import { readRemoteModelCatalogAsync } from "./remote-store.js";
 
 export type RemoteCatalogPublicationResult = "published" | "unchanged" | "superseded";
 
@@ -54,16 +54,8 @@ function isCompatible(bundle: RemoteModelCatalogWireBundle, bundledGeneratedAt: 
   return comparison !== null && comparison >= 0;
 }
 
-function readCompatibleRemoteModelCatalog(): ActiveRemoteModelCatalog | null {
-  const bundledGeneratedAt = bundledCatalogGeneratedAt();
-  if (bundledGeneratedAt === undefined) {
-    return null;
-  }
-  return selectCompatibleRemoteModelCatalog(readRemoteModelCatalog(), bundledGeneratedAt);
-}
-
 function selectCompatibleRemoteModelCatalog(
-  stored: ReturnType<typeof readRemoteModelCatalog>,
+  stored: Awaited<ReturnType<typeof readRemoteModelCatalogAsync>>,
   bundledGeneratedAt: number,
 ): ActiveRemoteModelCatalog | null {
   if (!stored) {
@@ -100,18 +92,9 @@ function publishRemoteModelCatalogStartupSnapshot(
   return snapshot;
 }
 
+/** Read the already-published startup pair without loading persistent state. */
 export function captureRemoteModelCatalogStartupSnapshot(): ActiveRemoteModelCatalog | null {
-  const inherited = inheritedRemoteModelCatalogStartupSnapshot();
-  if (inherited !== undefined) {
-    return inherited.catalog;
-  }
-  let snapshot: ActiveRemoteModelCatalog | null;
-  try {
-    snapshot = readCompatibleRemoteModelCatalog();
-  } catch {
-    snapshot = null;
-  }
-  return publishRemoteModelCatalogStartupSnapshot(snapshot);
+  return inheritedRemoteModelCatalogStartupSnapshot()?.catalog ?? null;
 }
 
 /** Prepare the same first-winner startup pair without host-thread SQLite reads. */
@@ -198,18 +181,13 @@ export function publishRemoteModelCatalogSnapshot(
 
 export function getActiveRemoteModelCatalog(
   config: OpenClawConfig,
-  captureStartup = true,
 ): ActiveRemoteModelCatalog | undefined {
   if (!isRemoteModelCatalogRefreshEnabled(config)) {
     return undefined;
   }
   const scoped = remoteCatalogScope.getStore();
   const snapshot =
-    scoped !== undefined
-      ? scoped.catalog
-      : captureStartup
-        ? captureRemoteModelCatalogStartupSnapshot()
-        : inheritedRemoteModelCatalogStartupSnapshot()?.catalog;
+    scoped !== undefined ? scoped.catalog : captureRemoteModelCatalogStartupSnapshot();
   return snapshot && isRemoteCatalogSourceActive(config, snapshot.sourceUrl) ? snapshot : undefined;
 }
 
@@ -219,16 +197,4 @@ export function getRemoteModelCatalogProviderOverlay(
 ): ModelCatalogProvider | undefined {
   const providerId = normalizeProviderId(provider);
   return providerId ? getActiveRemoteModelCatalog(config)?.providers[providerId] : undefined;
-}
-
-export function getRemoteModelCatalogPricing(
-  config: OpenClawConfig,
-): Readonly<Record<string, RemoteModelCatalogPrice>> | undefined {
-  return getActiveRemoteModelCatalog(config)?.pricing;
-}
-
-export function getRemoteModelCatalogUpstreamPricing(
-  config: OpenClawConfig,
-): Readonly<Record<string, RemoteModelCatalogUpstreamPrice>> | undefined {
-  return getActiveRemoteModelCatalog(config)?.upstreamPricing;
 }

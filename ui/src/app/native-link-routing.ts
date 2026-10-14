@@ -24,7 +24,7 @@ type NativeLinkRouting = {
 
 type NativeLinkRoutingOptions = {
   signal?: AbortSignal;
-  onNativeUpdateDeclined?: () => void;
+  prepareNativeUpdateFallback?: () => { isCurrent: () => boolean; run: () => void };
   shouldOpenInControlUiBrowser?: () => boolean;
   shouldOpenExternally?: () => boolean;
   canPresentBrowserPanel?: () => boolean;
@@ -65,12 +65,8 @@ function trustedExternalAppUrl(event: MouseEvent): { anchor: HTMLAnchorElement; 
   if (!anchor || anchor.hasAttribute("download") || anchor.hasAttribute("data-file-path")) {
     return null;
   }
-  try {
-    const url = new URL(anchor.href, window.location.href);
-    return url.protocol === "mailto:" || url.protocol === "tel:" ? { anchor, url } : null;
-  } catch {
-    return null;
-  }
+  const url = URL.parse(anchor.href, window.location.href);
+  return url && (url.protocol === "mailto:" || url.protocol === "tel:") ? { anchor, url } : null;
 }
 
 function postNativeLink(postMessage: NativeLinkPoster, url: URL): boolean {
@@ -121,23 +117,25 @@ export function startNativeLinkRouting(options: NativeLinkRoutingOptions = {}): 
     !postMessage &&
     !hasNativeBrowserBridge() &&
     !options.shouldOpenInControlUiBrowser &&
-    !options.onNativeUpdateDeclined
+    !options.prepareNativeUpdateFallback
   ) {
     return { dispose() {} };
   }
   let menu: NativeLinkMenu | null = null;
   let menuRequest = 0;
   let disposed = false;
-  let nativeUpdatePending = false;
+  let nativeUpdatePending:
+    | ReturnType<NonNullable<NativeLinkRoutingOptions["prepareNativeUpdateFallback"]>>
+    | undefined;
   const handleNativeUpdatePosted = () => {
-    nativeUpdatePending = true;
+    nativeUpdatePending = options.prepareNativeUpdateFallback?.();
   };
   const handleNativeUpdateDeclined = () => {
-    if (!nativeUpdatePending) {
-      return;
+    const pending = nativeUpdatePending;
+    nativeUpdatePending = undefined;
+    if (pending?.isCurrent()) {
+      pending.run();
     }
-    nativeUpdatePending = false;
-    options.onNativeUpdateDeclined?.();
   };
   const closeMenu = (expected?: NativeLinkMenu) => {
     if (expected && menu !== expected) {
@@ -244,6 +242,7 @@ export function startNativeLinkRouting(options: NativeLinkRoutingOptions = {}): 
 
   const dispose = () => {
     disposed = true;
+    nativeUpdatePending = undefined;
     options.signal?.removeEventListener("abort", dispose);
     window.removeEventListener("click", handleClick);
     window.removeEventListener("auxclick", handleClick);

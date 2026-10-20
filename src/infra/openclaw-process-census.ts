@@ -28,14 +28,24 @@ const workerEntrypoints = Object.values(runtimeProcessEntrypoints).flatMap((entr
   `dist/${entry.distWorkerPath}`,
 ]);
 
+const systemdUserManagerPaths = ["/usr/lib/systemd/systemd", "/lib/systemd/systemd"];
+
 function isStandardSystemdUserManager(command: ProcessCommand | undefined): boolean {
-  return (
-    command !== undefined &&
-    "argv" in command &&
-    command.argv.length === 2 &&
-    command.argv[1] === "--user" &&
-    (command.argv[0] === "/usr/lib/systemd/systemd" || command.argv[0] === "/lib/systemd/systemd")
-  );
+  if (command === undefined || !("argv" in command)) {
+    return false;
+  }
+  const [managerPath, userFlag, reexecFlag, ...extraFlags] = command.argv;
+  if (
+    managerPath === undefined ||
+    !systemdUserManagerPaths.includes(managerPath) ||
+    userFlag !== "--user" ||
+    extraFlags.length > 0
+  ) {
+    return false;
+  }
+  // The manager re-execs itself keeping the descriptor fd, so a running user
+  // manager commonly shows `systemd --user --deserialize=<fd>`, not a bare `--user`.
+  return reexecFlag === undefined || /^--deserialize=\d+$/u.test(reexecFlag);
 }
 
 function isStandardSystemdLoginProcess(

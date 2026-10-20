@@ -77,11 +77,10 @@ it("keeps the systemd login-process exemption off unrelated user-manager argumen
     },
     { pid: helperPid, state: "S", command: { ppid: managerPid, argv: ["(sd-pam)"], uid: 1000 } },
   ]);
-  const result = inspectOtherOpenClawProcesses();
-  expect(result.pids).toContain(helperPid);
-  expect(result.warnings).toEqual(
-    expect.arrayContaining([
+  expect(inspectOtherOpenClawProcesses()).toEqual({
+    pids: expect.arrayContaining([helperPid]),
+    warnings: expect.arrayContaining([
       expect.stringContaining(`PID ${helperPid}: working directory is unavailable`),
     ]),
-  );
+  });
 });

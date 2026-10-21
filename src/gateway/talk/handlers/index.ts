@@ -460,7 +460,6 @@ async function buildTalkCatalog(
         }),
       ),
     ),
-    ),
     measure("transcription", () =>
       buildTalkTranscriptionCatalog(config, realtimeAgentId, onReadinessError),
     ),

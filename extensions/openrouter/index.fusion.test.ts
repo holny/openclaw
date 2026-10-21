@@ -1,201 +1,100 @@
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { describe, expect, it } from "vitest";
+import { beforeAll, expect, it } from "vitest";
 import openrouterPlugin from "./index.js";
 
-function createFusionModelConfig(modelKey: string, extraBody: Record<string, unknown>) {
-  return {
-    agents: {
-      defaults: {
-        models: {
-          [modelKey]: { params: { extraBody } },
+let provider: Awaited<ReturnType<typeof registerSingleProviderPlugin>>;
+beforeAll(async () => {
+  provider = await registerSingleProviderPlugin(openrouterPlugin);
+});
+
+function resolveContribution(agents: OpenClawConfig["agents"], agentId?: string) {
+  return provider.resolveSystemPromptContribution?.({
+    provider: "openrouter",
+    modelId: "openrouter/fusion",
+    promptMode: "full",
+    config: { agents },
+    agentId,
+  });
+}
+
+function fusionModels(fields: Record<string, unknown>, key = "openrouter/fusion") {
+  return { [key]: modelEntry(fusionBody(fields)) };
+}
+function modelEntry(extraBody: Record<string, unknown>) {
+  return { params: { extraBody } };
+}
+function fusionBody(fields: Record<string, unknown>) {
+  return { plugins: [{ id: "fusion", ...fields }] };
+}
+
+it("keeps bounded Fusion model IDs on valid UTF-16 boundaries", () => {
+  const boundaryModelId = `${"a".repeat(255)}😀tail`;
+  const contribution = resolveContribution({
+    defaults: {
+      models: fusionModels(
+        { analysis_models: [boundaryModelId], model: boundaryModelId },
+        "openrouter/openrouter/fusion",
+      ),
+    },
+  });
+
+  expect(contribution?.dynamicSuffix).toContain(`Analysis models: ${"a".repeat(255)}.`);
+  expect(contribution?.dynamicSuffix).toContain(`Final Fusion model: ${"a".repeat(255)}.`);
+});
+
+it("matches transport alias precedence for Fusion extra body", () => {
+  const contribution = resolveContribution({
+    defaults: {
+      params: { extra_body: fusionBody({ analysis_models: ["analysis/a"] }) },
+      models: fusionModels({ analysis_models: ["analysis/b"] }),
+    },
+  });
+
+  expect(contribution?.dynamicSuffix).toContain("Analysis models: analysis/a.");
+  expect(contribution?.dynamicSuffix).not.toContain("analysis/b");
+});
+
+it("reads per-agent Fusion config from the canonical agent roster", () => {
+  const contribution = resolveContribution(
+    { entries: { reviewer: modelEntry(fusionBody({ analysis_models: ["analysis/b"] })) } },
+    "reviewer",
+  );
+
+  expect(contribution?.dynamicSuffix).toContain("Analysis models: analysis/b.");
+});
+
+it("uses the bound agent's model-specific Fusion configuration", () => {
+  const contribution = resolveContribution(
+    {
+      defaults: { models: fusionModels({ model: "default/model" }) },
+      entries: {
+        reviewer: {
+          models: fusionModels({ model: "reviewer/model" }, "openrouter/openrouter/fusion"),
         },
       },
     },
-  };
-}
+    "reviewer",
+  );
 
-describe("openrouter Fusion prompt hooks", () => {
-  it("describes configured Fusion analysis models in the system prompt", async () => {
-    const provider = await registerSingleProviderPlugin(openrouterPlugin);
-    const contribution = provider.resolveSystemPromptContribution?.({
-      provider: "openrouter",
-      modelId: "openrouter/fusion",
-      promptMode: "full",
-      config: createFusionModelConfig("openrouter/openrouter/fusion", {
-        plugins: [
-          {
-            id: "fusion",
-            analysis_models: [
-              "google/gemini-3.5-flash",
-              "moonshotai/kimi-k2.6",
-              "deepseek/deepseek-v4-pro",
-            ],
-            model: "google/gemini-3.5-flash",
-          },
-        ],
-      }),
-    } as never);
+  expect(contribution?.dynamicSuffix).toContain("Final Fusion model: reviewer/model.");
+  expect(contribution?.dynamicSuffix).not.toContain("default/model");
+});
 
-    expect(contribution?.dynamicSuffix).toContain("OpenRouter Fusion Configuration");
-    expect(contribution?.dynamicSuffix).toContain(
-      "Analysis models: google/gemini-3.5-flash, moonshotai/kimi-k2.6, deepseek/deepseek-v4-pro.",
-    );
-    expect(contribution?.dynamicSuffix).toContain("Final Fusion model: google/gemini-3.5-flash.");
+it.each([
+  {
+    metadata: { private: "do-not-render" },
+    plugins: [{ id: "not-fusion", model: "private-model" }],
+  },
+  fusionBody({
+    enabled: false,
+    analysis_models: ["analysis/b"],
+    model: "final/model",
+  }),
+])("omits non-Fusion and disabled extraBody from the prompt: %j", (extraBody) => {
+  const contribution = resolveContribution({
+    defaults: { models: { "openrouter/openrouter/fusion": modelEntry(extraBody) } },
   });
 
-  it("keeps bounded Fusion model IDs on valid UTF-16 boundaries", async () => {
-    const provider = await registerSingleProviderPlugin(openrouterPlugin);
-    const boundaryModelId = `${"a".repeat(255)}😀tail`;
-    const contribution = provider.resolveSystemPromptContribution?.({
-      provider: "openrouter",
-      modelId: "openrouter/fusion",
-      promptMode: "full",
-      config: createFusionModelConfig("openrouter/fusion", {
-        plugins: [
-          {
-            id: "fusion",
-            analysis_models: [boundaryModelId],
-            model: boundaryModelId,
-          },
-        ],
-      }),
-    } as never);
-
-    expect(contribution?.dynamicSuffix).toContain(`Analysis models: ${"a".repeat(255)}.`);
-    expect(contribution?.dynamicSuffix).toContain(`Final Fusion model: ${"a".repeat(255)}.`);
-  });
-
-  it("describes Fusion config from the canonical OpenRouter model key", async () => {
-    const provider = await registerSingleProviderPlugin(openrouterPlugin);
-    const contribution = provider.resolveSystemPromptContribution?.({
-      provider: "openrouter",
-      modelId: "openrouter/fusion",
-      promptMode: "full",
-      config: createFusionModelConfig("openrouter/fusion", {
-        plugins: [
-          {
-            id: "fusion",
-            analysis_models: ["deepseek/deepseek-v4-pro"],
-          },
-        ],
-      }),
-    } as never);
-
-    expect(contribution?.dynamicSuffix).toContain("Analysis models: deepseek/deepseek-v4-pro.");
-  });
-
-  it("matches transport alias precedence for Fusion extra body", async () => {
-    const provider = await registerSingleProviderPlugin(openrouterPlugin);
-    const contribution = provider.resolveSystemPromptContribution?.({
-      provider: "openrouter",
-      modelId: "openrouter/fusion",
-      promptMode: "full",
-      config: {
-        agents: {
-          defaults: {
-            params: {
-              extra_body: {
-                plugins: [
-                  {
-                    id: "fusion",
-                    analysis_models: ["google/gemini-3.5-flash"],
-                  },
-                ],
-              },
-            },
-            models: {
-              "openrouter/fusion": {
-                params: {
-                  extraBody: {
-                    plugins: [
-                      {
-                        id: "fusion",
-                        analysis_models: ["deepseek/deepseek-v4-pro"],
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    } as never);
-
-    expect(contribution?.dynamicSuffix).toContain("Analysis models: google/gemini-3.5-flash.");
-    expect(contribution?.dynamicSuffix).not.toContain("deepseek/deepseek-v4-pro");
-  });
-
-  it("reads per-agent Fusion config from the canonical agent roster", async () => {
-    const provider = await registerSingleProviderPlugin(openrouterPlugin);
-    const contribution = provider.resolveSystemPromptContribution?.({
-      provider: "openrouter",
-      modelId: "openrouter/fusion",
-      promptMode: "full",
-      agentId: "reviewer",
-      config: {
-        agents: {
-          entries: {
-            reviewer: {
-              params: {
-                extraBody: {
-                  plugins: [{ id: "fusion", analysis_models: ["deepseek/deepseek-v4-pro"] }],
-                },
-              },
-            },
-          },
-        },
-      },
-    } as never);
-
-    expect(contribution?.dynamicSuffix).toContain("Analysis models: deepseek/deepseek-v4-pro.");
-  });
-
-  it("keeps arbitrary OpenRouter extraBody fields out of the system prompt", async () => {
-    const provider = await registerSingleProviderPlugin(openrouterPlugin);
-    const contribution = provider.resolveSystemPromptContribution?.({
-      provider: "openrouter",
-      modelId: "openrouter/fusion",
-      promptMode: "full",
-      config: {
-        agents: {
-          defaults: {
-            models: {
-              "openrouter/openrouter/fusion": {
-                params: {
-                  extraBody: {
-                    metadata: { private: "do-not-render" },
-                    plugins: [{ id: "not-fusion", model: "private-model" }],
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    } as never);
-
-    expect(contribution).toBeUndefined();
-  });
-
-  it("does not describe disabled Fusion plugin config in the system prompt", async () => {
-    const provider = await registerSingleProviderPlugin(openrouterPlugin);
-    const contribution = provider.resolveSystemPromptContribution?.({
-      provider: "openrouter",
-      modelId: "openrouter/fusion",
-      promptMode: "full",
-      config: createFusionModelConfig("openrouter/fusion", {
-        plugins: [
-          {
-            id: "fusion",
-            enabled: false,
-            analysis_models: ["deepseek/deepseek-v4-pro"],
-            model: "google/gemini-3.5-flash",
-          },
-        ],
-      }),
-    } as never);
-
-    expect(contribution).toBeUndefined();
-  });
+  expect(contribution).toBeUndefined();
 });

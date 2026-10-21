@@ -2,11 +2,9 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { readGatewayLockProcessNamespace } from "../../infra/gateway-lock-payload.js";
+import { acquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
-import {
-  acquireStateDatabaseCoordinator,
-  resolveStateDatabaseCoordinatorPath,
-} from "../../infra/state-database-coordinator.js";
 import { readAgentDatabaseDeletionSnapshot } from "../../state/agent-deletion-journal.read.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import { createCurrentOpenClawAgentDatabaseFixtures } from "../../state/openclaw-agent-db.test-support.js";
@@ -15,7 +13,6 @@ import type { OpenClawStateWorkerContext } from "../../state/openclaw-state-work
 import * as stateWorker from "../../state/openclaw-state-worker-store.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
-  captureSessionTranscriptReconcileGeneration,
   closeSessionTranscriptReconcileWorkerPool,
   getSessionTranscriptReconcileWorkerPoolSnapshot,
   runSessionTranscriptReconcileOperation,
@@ -25,10 +22,10 @@ import type { SessionTranscriptReconcileWorkerMessage } from "./session-transcri
 
 function runDiskTask(context: OpenClawStateWorkerContext, pathname: string) {
   return runSessionTranscriptReconcileOperation(
-    captureSessionTranscriptReconcileGeneration(),
     async (operation) => {
       const task = await operation.startTask({
         mode: "disk",
+        sessionIds: [],
         agentId: "main",
         path: pathname,
         stateDir: context.environment.OPENCLAW_STATE_DIR,
@@ -60,20 +57,13 @@ function runDiskTask(context: OpenClawStateWorkerContext, pathname: string) {
 
 function observe(context: OpenClawStateWorkerContext, agentPath: string) {
   return observeReconcileHostSqlite({
-    control: [
-      resolveStateDatabaseCoordinatorPath({
-        databasePath: context.admission.databasePath,
-        runtimeDirectory: context.coordinatorRuntime.directory,
-        uid: process.getuid?.(),
-      }),
-    ],
     data: [context.admission.databasePath, agentPath],
   });
 }
 
 it.each([false, true])(
-  "initializes runtime without inventing deletion history for a custom agent, borrowed=%s",
-  async (borrowed) => {
+  "initializes runtime without inventing deletion history for a custom agent, serving Gateway owner=%s",
+  async (owned) => {
     await withOpenClawTestState(
       { scenario: "external-service", label: "reconcile-first-creation" },
       async (state) => {
@@ -85,8 +75,18 @@ it.each([false, true])(
         const context = captureOpenClawStateWorkerContext();
         expect(context.admission.identity.key).toMatch(/^path:/u);
         expect(fs.existsSync(context.admission.databasePath)).toBe(false);
-        const parent = borrowed
-          ? acquireStateDatabaseCoordinator({ databasePath: context.admission.databasePath })
+        const parent = owned
+          ? acquireGatewayStateOwner({
+              databasePath: context.admission.databasePath,
+              payload: {
+                pid: process.pid,
+                processNamespace: readGatewayLockProcessNamespace(),
+                createdAt: new Date().toISOString(),
+                configPath: state.configPath,
+                stateDir: state.stateDir,
+                role: "gateway",
+              },
+            })
           : undefined;
         const observation = observe(context, agentPath);
         try {
@@ -140,7 +140,10 @@ it("refuses an agent replacement during canonical first creation", async () => {
         });
       const observation = observe(context, agentPath);
       try {
-        await expect(runDiskTask(context, agentPath)).rejects.toThrow();
+        await expect(runDiskTask(context, agentPath)).resolves.toEqual([
+          "failed",
+          "lease-released",
+        ]);
         expect(replaced).toBe(true);
         expect(readDatabasePathIdentitySync(agentPath).key).not.toBe(original.key);
         await closeSessionTranscriptReconcileWorkerPool();

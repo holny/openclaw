@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createCronRegressionState } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { HeartbeatRunOptions } from "../../infra/heartbeat-runner-execution.js";
@@ -7,72 +8,44 @@ import {
   resolveHeartbeatRunPrompt,
 } from "../../infra/heartbeat-runner-prompt.js";
 import { startHeartbeatRunner } from "../../infra/heartbeat-runner-scheduler.js";
-import { requestHeartbeat as requestHeartbeatWake } from "../../infra/heartbeat-wake.js";
+import { requestHeartbeatAndWait } from "../../infra/heartbeat-wake.js";
 import {
   drainSystemEvents,
   enqueueSystemEvent as queueSystemEvent,
   peekSystemEventEntries,
 } from "../../infra/system-events.js";
-import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
-import type { CronJob } from "../types.js";
-import { createCronServiceState } from "./state.js";
+import { makeCronJob } from "../delivery.test-helpers.js";
 import { executeJobCore } from "./timer-execution.js";
 
 describe("cron script immediate wake", () => {
   it.each([
-    {
-      name: "main-session notification",
-      sessionTarget: "main",
-      notify: "The deployment queue needs attention.",
-      expectedText: "The deployment queue needs attention.",
-      contextKey: "cron:script-job:script",
-      wake: "now",
-      immediate: true,
-    },
-    {
-      name: "isolated wake-only completion",
-      sessionTarget: "isolated",
-      expectedText: "script job script job completed",
-      contextKey: "cron:script-job:script-wake",
-      wake: "now",
-      immediate: true,
-    },
-    {
-      name: "deferred main-session notification",
-      sessionTarget: "main",
-      notify: "Keep this reminder for the next heartbeat.",
-      expectedText: "Keep this reminder for the next heartbeat.",
-      contextKey: "cron:script-job:script",
-      wake: "next-heartbeat",
-      immediate: false,
-    },
+    ["main", "now", "The deployment queue needs attention."],
+    ["isolated", "now", undefined],
+    ["main", "next-heartbeat", "Keep this reminder for the next heartbeat."],
   ] as const)(
-    "honors a $name when recurring heartbeat cadence is disabled",
-    async ({ sessionTarget, expectedText, contextKey, wake, immediate, ...result }) => {
+    "honors %s / %s when recurring heartbeat cadence is disabled",
+    async (sessionTarget, wake, notify) => {
+      const expectedText = notify ?? "script job script job completed";
+      const contextKey = `cron:script-job:${notify ? "script" : "script-wake"}`;
       vi.useFakeTimers();
       const now = Date.parse("2026-08-24T12:00:00.000Z");
       vi.setSystemTime(now);
       const cfg: OpenClawConfig = {
         agents: {
           defaults: { heartbeat: { every: "0m" } },
-          list: [{ id: "main" }, { id: "finn" }],
+          entries: { main: {}, finn: {} },
         },
       };
       const sessionKey = resolveAgentMainSessionKey({ cfg, agentId: "finn" });
       const prompts: string[] = [];
+      const pendingWakes: Array<ReturnType<typeof requestHeartbeatAndWait>> = [];
       const runOnce = vi.fn(async (options: HeartbeatRunOptions) => {
+        const { heartbeat, source, reason } = options;
+        const context = { sessionKey: options.sessionKey, heartbeat, source, reason };
         const prompt = resolveHeartbeatRunPrompt({
           cfg,
-          preflight: await resolveHeartbeatPreflight({
-            cfg,
-            agentId: "finn",
-            sessionKey: options.sessionKey,
-            heartbeat: options.heartbeat,
-            source: options.source,
-            reason: options.reason,
-          }),
+          preflight: await resolveHeartbeatPreflight({ ...context, cfg, agentId: "finn" }),
           canRelayToUser: true,
-          startedAt: now,
           scheduledTasks: [],
           useHeartbeatResponseTool: false,
         });
@@ -80,19 +53,12 @@ describe("cron script immediate wake", () => {
         prompts.push(prompt.prompt);
         return { status: "ran" as const, durationMs: 1 };
       });
-      const runner = startHeartbeatRunner({
-        cfg,
-        readCurrentConfig: () => cfg,
-        runOnce,
-      });
+      const runner = startHeartbeatRunner({ cfg, readCurrentConfig: () => cfg, runOnce });
 
       try {
-        const state = createCronServiceState({
-          scheduler: createTestGatewayScheduler(),
+        const state = createCronRegressionState({
           storePath: "/tmp/cron-script-wake-state.sqlite",
-          cronEnabled: true,
           cronConfig: { triggers: { enabled: true } },
-          log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           nowMs: () => now,
           enqueueSystemEvent: (text, options) =>
             queueSystemEvent(text, {
@@ -100,28 +66,22 @@ describe("cron script immediate wake", () => {
               contextKey: options?.contextKey,
               deliveryContext: options?.deliveryContext,
             }),
-          requestHeartbeat: (wakeRequest) =>
-            requestHeartbeatWake({ ...wakeRequest, sessionKey, coalesceMs: 0 }),
+          requestHeartbeat: (wakeRequest) => {
+            pendingWakes.push(
+              requestHeartbeatAndWait({ ...wakeRequest, sessionKey, coalesceMs: 0 }),
+            );
+          },
           runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
-          runScriptJob: vi.fn(async () => ({
-            status: "ok" as const,
-            ...("notify" in result ? { notify: result.notify } : {}),
-            wake,
-          })),
+          runScriptJob: vi.fn(async () => ({ status: "ok" as const, notify, wake })),
         });
-        const job: CronJob = {
+        const job = makeCronJob({
           id: "script-job",
           name: "script job",
           agentId: "finn",
-          enabled: true,
-          createdAtMs: now - 60_000,
-          updatedAtMs: now,
-          schedule: { kind: "every", everyMs: 60_000, anchorMs: now - 60_000 },
           sessionTarget,
           wakeMode: "now",
           payload: { kind: "script", script: "return { wake: 'now' }" },
-          state: {},
-        };
+        });
 
         await expect(executeJobCore(state, job)).resolves.toMatchObject({ status: "ok" });
         expect(peekSystemEventEntries(sessionKey)).toEqual([
@@ -129,8 +89,9 @@ describe("cron script immediate wake", () => {
         ]);
 
         await vi.advanceTimersByTimeAsync(1);
+        await Promise.all(pendingWakes);
 
-        if (!immediate) {
+        if (wake === "next-heartbeat") {
           expect(runOnce).not.toHaveBeenCalled();
           expect(peekSystemEventEntries(sessionKey)).toEqual([
             expect.objectContaining({ text: expectedText, contextKey }),
@@ -151,9 +112,15 @@ describe("cron script immediate wake", () => {
         expect(prompts[0]).toContain(expectedText);
         expect(prompts[0]).toContain("Please relay this reminder to the user");
       } finally {
-        runner.stop();
-        drainSystemEvents(sessionKey);
-        vi.useRealTimers();
+        try {
+          // Stopping the runner retains unfinished notifications for its successor.
+          await vi.advanceTimersByTimeAsync(1);
+          await Promise.all(pendingWakes);
+        } finally {
+          runner.stop();
+          drainSystemEvents(sessionKey);
+          vi.useRealTimers();
+        }
       }
     },
   );

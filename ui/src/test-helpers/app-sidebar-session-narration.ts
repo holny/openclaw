@@ -1,8 +1,4 @@
 import { vi } from "vitest";
-import {
-  SidebarSessionNarrationController,
-  type SidebarNarrationSyncInput,
-} from "../components/app-sidebar-session-narration.ts";
 import type { SidebarRecentSession } from "../components/app-sidebar-session-types.ts";
 
 export function runningRow(key: string): SidebarRecentSession {
@@ -30,21 +26,6 @@ export function runningRow(key: string): SidebarRecentSession {
     runningChildCount: 0,
     failedChildCount: 0,
   };
-}
-
-export function createRunningNarrationController(source: SidebarNarrationSyncInput["source"]) {
-  const updates: Array<ReadonlyMap<string, string>> = [];
-  const controller = new SidebarSessionNarrationController((lines) => updates.push(lines));
-  controller.sync({
-    enabled: true,
-    connected: true,
-    connectionIdentity: {},
-    source,
-    openSessionKey: "",
-    rows: [runningRow("agent:main:run")],
-    agentId: "main",
-  });
-  return { controller, updates };
 }
 
 export function browserVisibility(initial: DocumentVisibilityState = "visible") {

@@ -1,4 +1,3 @@
-// Resolves recent Gateway sessions and attaches the existing TUI to the selected key.
 import { cancel } from "@clack/prompts";
 import { lazyCompile } from "../../packages/gateway-protocol/src/protocol-validator.js";
 import { SessionsResolveResultSchema } from "../../packages/gateway-protocol/src/schema/sessions-resolve.js";
@@ -7,12 +6,10 @@ import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { decodeResumeHandoff } from "../shared/resume-handoff.js";
-import type { TuiSessionList } from "../tui/tui-backend.js";
 import {
   buildSessionChoices,
   loadRecentSessions,
   resolveResumeSession,
-  type ResumeResolution,
   type SessionPickerChoice,
 } from "../tui/tui-session-picker.js";
 import type { ResumeCliOptions } from "./resume-cli.js";
@@ -24,12 +21,6 @@ const RESUME_HANDOFF_UNRESOLVED =
   "Could not resolve the session handoff. Copy a fresh command from the Control UI.";
 
 const validateHandoffSessionResolveResult = lazyCompile(SessionsResolveResultSchema);
-
-function requireInteractiveResumeTerminal() {
-  if (!isTerminalInteractive()) {
-    throw new Error(RESUME_INTERACTIVE_TERMINAL_GUIDANCE);
-  }
-}
 
 async function formatResumeConnectionError(error: unknown): Promise<Error> {
   const [{ formatTuiErrorMessage }, { resolveGatewayDisconnectState }] = await Promise.all([
@@ -46,7 +37,7 @@ async function formatResumeConnectionError(error: unknown): Promise<Error> {
     [
       state.connectionStatus,
       state.remediation ??
-        "Ensure the Gateway is running and your --url/--token/--password are correct.",
+        "Check that the Gateway is running and your --url/--token/--password are correct.",
     ].join("\n"),
     { cause: error },
   );
@@ -62,18 +53,9 @@ async function connectResumeGateway(opts: ResumeCliOptions, handoffTarget: boole
   });
   try {
     await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const finish = (complete: () => void) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        complete();
-      };
-      client.onConnected = () => finish(resolve);
-      client.onConnectError = (error) => finish(() => reject(error));
-      client.onDisconnected = (reason) =>
-        finish(() => reject(new Error(reason || "Gateway connection closed")));
+      client.onConnected = resolve;
+      client.onConnectError = reject;
+      client.onDisconnected = (reason) => reject(new Error(reason || "Gateway connection closed"));
       client.start();
     });
     return client;
@@ -130,48 +112,6 @@ async function fetchResumeSessions(
   }
 }
 
-async function promptResumeSession(
-  sessions: readonly TuiSessionList["sessions"][number][],
-): Promise<string | null> {
-  const choices = buildSessionChoices(sessions);
-  if (choices.length === 0) {
-    throw new Error(
-      "No recent sessions found. Run `openclaw sessions` to inspect sessions or `openclaw tui` to start one.",
-    );
-  }
-  const selected = await selectStyled({
-    message: "Resume a session",
-    options: choices.map((choice) => ({
-      value: choice.value,
-      label: formatResumeCandidate(choice),
-      hint: choice.description ? sanitizeTerminalText(choice.description) : undefined,
-    })),
-  });
-  if (typeof selected === "symbol") {
-    cancel("Cancelled.");
-    return null;
-  }
-  return selected;
-}
-
-function reportResumeFailure(
-  query: string,
-  resolution: Exclude<ResumeResolution, { kind: "match" }>,
-) {
-  if (resolution.kind === "ambiguous") {
-    defaultRuntime.error(`Session query ${JSON.stringify(query)} is ambiguous. Candidates:`);
-    for (const candidate of resolution.candidates) {
-      defaultRuntime.error(`  ${formatResumeCandidate(candidate)}`);
-    }
-    defaultRuntime.error("Use a longer name or the exact session key.");
-    return;
-  }
-  defaultRuntime.error(`No recent session matched ${JSON.stringify(query)}.`);
-  defaultRuntime.error(
-    "Run `openclaw resume` to choose from recent sessions or `openclaw sessions` to inspect all sessions.",
-  );
-}
-
 function formatResumeCandidate(candidate: SessionPickerChoice): string {
   const label = sanitizeTerminalText(candidate.label);
   const key = sanitizeTerminalText(candidate.value);
@@ -187,14 +127,15 @@ function resolveExplicitGlobalSessionKey(
     : undefined;
 }
 
-/** Resolve or select one session and run the existing Gateway-backed TUI. */
 export async function runResumeCommand(query: string | undefined, opts: ResumeCliOptions) {
   const { handoff: encodedHandoff, ...connectionOptions } = opts;
   if (encodedHandoff !== undefined && (query !== undefined || opts.url !== undefined)) {
     throw new Error("--handoff cannot be combined with a positional query or --url.");
   }
   const handoff = encodedHandoff === undefined ? undefined : decodeResumeHandoff(encodedHandoff);
-  requireInteractiveResumeTerminal();
+  if (!isTerminalInteractive()) {
+    throw new Error(RESUME_INTERACTIVE_TERMINAL_GUIDANCE);
+  }
   const resolvedQuery = query?.trim();
   const explicitGlobalSession = resolveExplicitGlobalSessionKey(resolvedQuery);
   let connection: Awaited<ReturnType<typeof connectResumeGateway>>["connection"];
@@ -223,13 +164,44 @@ export async function runResumeCommand(query: string | undefined, opts: ResumeCl
     } else if (resolvedQuery) {
       const resolution = resolveResumeSession(discovery.sessions, resolvedQuery);
       if (resolution.kind !== "match") {
-        reportResumeFailure(resolvedQuery, resolution);
+        if (resolution.kind === "ambiguous") {
+          defaultRuntime.error(
+            `Session query ${JSON.stringify(resolvedQuery)} is ambiguous. Candidates:`,
+          );
+          for (const candidate of resolution.candidates) {
+            defaultRuntime.error(`  ${formatResumeCandidate(candidate)}`);
+          }
+          defaultRuntime.error("Use a longer name or the exact session key.");
+        } else {
+          defaultRuntime.error(`No recent session matched ${JSON.stringify(resolvedQuery)}.`);
+          defaultRuntime.error(
+            "Run `openclaw resume` to choose from recent sessions or `openclaw sessions` to inspect all sessions.",
+          );
+        }
         defaultRuntime.exit(1);
         return;
       }
       sessionKey = resolution.session.value;
     } else {
-      sessionKey = await promptResumeSession(discovery.sessions);
+      const choices = buildSessionChoices(discovery.sessions);
+      if (choices.length === 0) {
+        throw new Error(
+          "No recent sessions found. Run `openclaw sessions` to inspect sessions or `openclaw tui` to start one.",
+        );
+      }
+      const selected = await selectStyled({
+        message: "Resume a session",
+        options: choices.map((choice) => ({
+          value: choice.value,
+          label: formatResumeCandidate(choice),
+          hint: choice.description ? sanitizeTerminalText(choice.description) : undefined,
+        })),
+      });
+      if (typeof selected === "symbol") {
+        cancel("Cancelled.");
+        return;
+      }
+      sessionKey = selected;
     }
   }
   if (!sessionKey) {
@@ -244,6 +216,5 @@ export async function runResumeCommand(query: string | undefined, opts: ResumeCl
       ...(connection.tlsFingerprint ? { tlsFingerprint: connection.tlsFingerprint } : {}),
     },
     session: sessionKey,
-    forceProcessExitOnReturn: true,
   });
 }

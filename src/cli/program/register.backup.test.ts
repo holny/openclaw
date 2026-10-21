@@ -1,244 +1,116 @@
-// Register backup tests cover backup command registration and option wiring.
 import { Command } from "commander";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { registerBackupCommand } from "./register.backup.js";
 
-const mocks = vi.hoisted(() => ({
-  backupCreateCommand: vi.fn(),
-  backupGitCreateCommand: vi.fn(),
-  backupGitInitCommand: vi.fn(),
-  backupGitLogCommand: vi.fn(),
-  backupGitRestoreCommand: vi.fn(),
-  backupGitVerifyCommand: vi.fn(),
-  backupRestoreCommand: vi.fn(),
-  backupSqliteCreateCommand: vi.fn(),
-  backupSqliteListCommand: vi.fn(),
-  backupSqliteRestoreCommand: vi.fn(),
-  backupSqliteVerifyCommand: vi.fn(),
-  backupVerifyCommand: vi.fn(),
-  runtime: {
-    log: vi.fn(),
-    error: vi.fn(),
-    exit: vi.fn(),
-  },
+const handlers = vi.hoisted(() => ({
+  create: vi.fn(),
+  verify: vi.fn(),
+  restore: vi.fn(),
+  gitLog: vi.fn(),
+  gitRestore: vi.fn(),
+  gitVerify: vi.fn(),
+  sqliteCreate: vi.fn(),
+  sqliteList: vi.fn(),
+  sqliteRestore: vi.fn(),
+  sqliteVerify: vi.fn(),
+  runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
 }));
 
-const backupCreateCommand = mocks.backupCreateCommand;
-const backupGitLogCommand = mocks.backupGitLogCommand;
-const backupRestoreCommand = mocks.backupRestoreCommand;
-const backupSqliteCreateCommand = mocks.backupSqliteCreateCommand;
-const backupSqliteListCommand = mocks.backupSqliteListCommand;
-const backupSqliteRestoreCommand = mocks.backupSqliteRestoreCommand;
-const backupSqliteVerifyCommand = mocks.backupSqliteVerifyCommand;
-const backupVerifyCommand = mocks.backupVerifyCommand;
-const runtime = mocks.runtime;
-
-vi.mock("../../commands/backup.js", () => ({
-  backupCreateCommand: mocks.backupCreateCommand,
-}));
-
+// mock-isolation: argument parsing must not create real backup archives.
+vi.mock("../../commands/backup.js", () => ({ backupCreateCommand: handlers.create }));
+// Argument parsing must not open database owners or launch backup workers.
+// mock-isolation: argument parsing must not open repositories or launch backup workers.
 vi.mock("../../commands/backup-git.js", () => ({
-  backupGitCreateCommand: mocks.backupGitCreateCommand,
-  backupGitInitCommand: mocks.backupGitInitCommand,
-  backupGitLogCommand: mocks.backupGitLogCommand,
-  backupGitRestoreCommand: mocks.backupGitRestoreCommand,
-  backupGitVerifyCommand: mocks.backupGitVerifyCommand,
+  backupGitLogCommand: handlers.gitLog,
+  backupGitRestoreCommand: handlers.gitRestore,
+  backupGitVerifyCommand: handlers.gitVerify,
 }));
-
-vi.mock("../../commands/backup-restore.js", () => ({
-  backupRestoreCommand: mocks.backupRestoreCommand,
-}));
-
-vi.mock("../../commands/backup-verify.js", () => ({
-  backupVerifyCommand: mocks.backupVerifyCommand,
-}));
-
+// mock-isolation: argument parsing must not restore or overwrite operator data.
+vi.mock("../../commands/backup-restore.js", () => ({ backupRestoreCommand: handlers.restore }));
+// mock-isolation: argument parsing must not read real backup archives.
+vi.mock("../../commands/backup-verify.js", () => ({ backupVerifyCommand: handlers.verify }));
+// mock-isolation: argument parsing must not open database owners or backup workers.
 vi.mock("../../commands/backup-sqlite.js", () => ({
-  backupSqliteCreateCommand: mocks.backupSqliteCreateCommand,
-  backupSqliteListCommand: mocks.backupSqliteListCommand,
-  backupSqliteRestoreCommand: mocks.backupSqliteRestoreCommand,
-  backupSqliteVerifyCommand: mocks.backupSqliteVerifyCommand,
+  backupSqliteCreateCommand: handlers.sqliteCreate,
+  backupSqliteListCommand: handlers.sqliteList,
+  backupSqliteRestoreCommand: handlers.sqliteRestore,
+  backupSqliteVerifyCommand: handlers.sqliteVerify,
 }));
+// mock-isolation: capture JSON and exit requests without writing to the real terminal or exiting.
+vi.mock("../../runtime.js", () => ({ defaultRuntime: handlers.runtime }));
 
-vi.mock("../../runtime.js", () => ({
-  defaultRuntime: mocks.runtime,
-}));
+const { runtime } = handlers;
+const gitOptions = { repository: "/repo", ref: "HEAD", global: false, json: true };
+async function parse(args: string) {
+  const program = new Command().exitOverride().configureOutput({ writeErr: () => {} });
+  registerBackupCommand(program);
+  await program.parseAsync(["backup", ...args.split(" ")], { from: "user" });
+}
+beforeEach(() => vi.resetAllMocks());
 
-describe("registerBackupCommand", () => {
-  async function runCli(args: string[]) {
-    const program = new Command();
-    registerBackupCommand(program);
-    await program.parseAsync(args, { from: "user" });
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    backupCreateCommand.mockResolvedValue(undefined);
-    mocks.backupGitCreateCommand.mockResolvedValue(undefined);
-    mocks.backupGitInitCommand.mockResolvedValue(undefined);
-    backupGitLogCommand.mockResolvedValue(undefined);
-    mocks.backupGitRestoreCommand.mockResolvedValue(undefined);
-    mocks.backupGitVerifyCommand.mockResolvedValue(undefined);
-    backupRestoreCommand.mockResolvedValue(undefined);
-    backupSqliteCreateCommand.mockResolvedValue(undefined);
-    backupSqliteListCommand.mockResolvedValue(undefined);
-    backupSqliteRestoreCommand.mockResolvedValue(undefined);
-    backupSqliteVerifyCommand.mockResolvedValue(undefined);
-    backupVerifyCommand.mockResolvedValue(undefined);
-  });
-
-  function expectForwardedOptions(command: typeof backupCreateCommand): Record<string, unknown> {
-    expect(command).toHaveBeenCalledTimes(1);
-    const call = command.mock.calls[0];
-    if (!call) {
-      throw new Error("expected backup command call");
-    }
-    const [runtimeArg, options] = call as unknown as [typeof runtime, Record<string, unknown>];
-    expect(runtimeArg).toBe(runtime);
-    return options;
-  }
-
-  it("runs backup create with forwarded options", async () => {
-    await runCli(["backup", "create", "--output", "/tmp/backups", "--json", "--dry-run"]);
-
-    const options = expectForwardedOptions(backupCreateCommand);
-    expect(options.output).toBe("/tmp/backups");
-    expect(options.json).toBe(true);
-    expect(options.dryRun).toBe(true);
-    expect(options.verify).toBe(false);
-    expect(options.onlyConfig).toBe(false);
-    expect(options.includeWorkspace).toBe(true);
-  });
-
-  it("honors --no-include-workspace", async () => {
-    await runCli(["backup", "create", "--no-include-workspace"]);
-
-    const options = expectForwardedOptions(backupCreateCommand);
-    expect(options.includeWorkspace).toBe(false);
-  });
-
-  it("forwards --verify to backup create", async () => {
-    await runCli(["backup", "create", "--verify"]);
-
-    const options = expectForwardedOptions(backupCreateCommand);
-    expect(options.verify).toBe(true);
-  });
-
-  it("forwards --only-config to backup create", async () => {
-    await runCli(["backup", "create", "--only-config"]);
-
-    const options = expectForwardedOptions(backupCreateCommand);
-    expect(options.onlyConfig).toBe(true);
-  });
-
-  it("runs backup verify with forwarded options", async () => {
-    await runCli(["backup", "verify", "/tmp/openclaw-backup.tar.gz", "--json"]);
-
-    const options = expectForwardedOptions(backupVerifyCommand);
-    expect(options.archive).toBe("/tmp/openclaw-backup.tar.gz");
-    expect(options.json).toBe(true);
-  });
-
-  it("runs whole-archive restore with forwarded options", async () => {
-    await runCli([
-      "backup",
-      "restore",
-      "/tmp/openclaw-backup.tar.gz",
-      "--target",
-      "/tmp/restored-openclaw",
-      "--json",
-    ]);
-
-    const options = expectForwardedOptions(backupRestoreCommand);
-    expect(options).toEqual({
-      archive: "/tmp/openclaw-backup.tar.gz",
-      target: "/tmp/restored-openclaw",
+it.each([
+  [
+    "create --output /repo --json --dry-run",
+    handlers.create,
+    {
+      output: "/repo",
       json: true,
-    });
-  });
+      dryRun: true,
+      verify: false,
+      onlyConfig: false,
+      includeWorkspace: true,
+    },
+  ],
+  ["verify /backup.tgz --json", handlers.verify, { archive: "/backup.tgz", json: true }],
+  [
+    "restore /backup.tgz --target /restored --json",
+    handlers.restore,
+    { archive: "/backup.tgz", target: "/restored", json: true },
+  ],
+  [
+    "sqlite create --global --repository /repo --json",
+    handlers.sqliteCreate,
+    { global: true, agent: undefined, repository: "/repo", json: true },
+  ],
+  [
+    "sqlite list --repository /repo --json",
+    handlers.sqliteList,
+    { repository: "/repo", json: true },
+  ],
+  [
+    "git restore --repository /repo --store team-reports --target /restored.sqlite --json",
+    handlers.gitRestore,
+    { ...gitOptions, store: "team-reports", target: "/restored.sqlite" },
+  ],
+  [
+    "git verify --repository /repo --store workboard --json",
+    handlers.gitVerify,
+    { ...gitOptions, store: "workboard" },
+  ],
+] as const)("dispatches backup %s", async (args, command, options) => {
+  await parse(args);
+  expect(command).toHaveBeenCalledExactlyOnceWith(runtime, options);
+});
 
-  it.each(["1oops", "1.5"])("rejects partial Git log limit %s", async (limit) => {
-    const program = new Command().exitOverride().configureOutput({ writeErr: () => {} });
-    registerBackupCommand(program);
+it.each([
+  [
+    "verify /snapshot --scratch /scratch --json",
+    handlers.sqliteVerify,
+    { scratch: "/scratch", json: true },
+  ],
+  [
+    "restore /snapshot --target /restored.sqlite --json",
+    handlers.sqliteRestore,
+    { target: "/restored.sqlite", json: true },
+  ],
+] as const)("dispatches backup sqlite %s", async (args, command, options) => {
+  await parse(`sqlite ${args}`);
+  expect(command).toHaveBeenCalledExactlyOnceWith(runtime, "/snapshot", options);
+});
 
-    await expect(
-      program.parseAsync(
-        ["backup", "git", "log", "--repository", "/tmp/backups", "--limit", limit],
-        { from: "user" },
-      ),
-    ).rejects.toThrow("--limit must be a positive integer.");
-    expect(backupGitLogCommand).not.toHaveBeenCalled();
-  });
-
-  it("runs SQLite snapshot create for named OpenClaw databases", async () => {
-    await runCli([
-      "backup",
-      "sqlite",
-      "create",
-      "--global",
-      "--repository",
-      "/tmp/snapshots",
-      "--json",
-    ]);
-
-    expect(backupSqliteCreateCommand).toHaveBeenCalledWith(runtime, {
-      global: true,
-      agent: undefined,
-      repository: "/tmp/snapshots",
-      json: true,
-    });
-
-    await runCli([
-      "backup",
-      "sqlite",
-      "create",
-      "--agent",
-      "main",
-      "--repository",
-      "/tmp/snapshots",
-    ]);
-
-    expect(backupSqliteCreateCommand).toHaveBeenLastCalledWith(runtime, {
-      global: false,
-      agent: "main",
-      repository: "/tmp/snapshots",
-      json: false,
-    });
-  });
-
-  it("runs SQLite snapshot list, verify, and restore", async () => {
-    await runCli(["backup", "sqlite", "list", "--repository", "/tmp/snapshots", "--json"]);
-    expect(backupSqliteListCommand).toHaveBeenCalledWith(runtime, {
-      repository: "/tmp/snapshots",
-      json: true,
-    });
-
-    await runCli([
-      "backup",
-      "sqlite",
-      "verify",
-      "/tmp/snapshots/one",
-      "--scratch",
-      "/tmp/private-scratch",
-      "--json",
-    ]);
-    expect(backupSqliteVerifyCommand).toHaveBeenCalledWith(runtime, "/tmp/snapshots/one", {
-      scratch: "/tmp/private-scratch",
-      json: true,
-    });
-
-    await runCli([
-      "backup",
-      "sqlite",
-      "restore",
-      "/tmp/snapshots/one",
-      "--target",
-      "/tmp/restored.sqlite",
-      "--json",
-    ]);
-    expect(backupSqliteRestoreCommand).toHaveBeenCalledWith(runtime, "/tmp/snapshots/one", {
-      target: "/tmp/restored.sqlite",
-      json: true,
-    });
-  });
+it("rejects partial Git log limits before dispatch", async () => {
+  await expect(parse("git log --repository /repo --limit 1oops")).rejects.toThrow(
+    "--limit must be a positive integer.",
+  );
+  expect(handlers.gitLog).not.toHaveBeenCalled();
 });

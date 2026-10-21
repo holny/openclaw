@@ -1,11 +1,9 @@
-import type { WorkerDispatchPlacement } from "./placement-dispatch-failure.js";
-import type { WorkerPlacementDispatchService } from "./placement-dispatch.js";
+import type { WorkerPlacementDispatchService as DispatchService } from "./placement-dispatch.js";
+import { localPlacement, sessionIdentity } from "./placement-suite.test-support.js";
 import type {
   WorkerPlacementDispatchRequest,
   WorkerPlacementMoveRequest,
 } from "./service-contract.js";
-
-type DispatchService = WorkerPlacementDispatchService;
 
 export function admittedRecovery(
   run: (
@@ -17,57 +15,34 @@ export function admittedRecovery(
     if (!admit) {
       throw new Error("Recovery fixture requires the coordinator admission owner");
     }
-    return await admit(async (signal) => {
-      await run(placement, async () => await core(signal));
-      return undefined;
-    });
+    return await admit((signal) => run(placement, () => core(signal)).then(() => undefined));
   };
 }
 
-export function preparedReclaim(run: () => Promise<unknown>) {
-  return async (
-    _request: unknown,
-    _authorize: unknown,
-    _beforeDrain: unknown,
-    serialize: (operation: () => Promise<unknown>) => Promise<unknown>,
-  ) => await serialize(run);
+export function preparedReclaim(
+  run: () => ReturnType<DispatchService["reclaim"]>,
+): DispatchService["reclaim"] {
+  return async (_request, _authorize, _beforeDrain, serialize) => {
+    if (!serialize) {
+      throw new Error("Reclaim fixture requires session admission");
+    }
+    return await serialize(run);
+  };
 }
 
 export const REQUEST: WorkerPlacementDispatchRequest = {
-  sessionId: "session-1",
-  sessionKey: "agent:main:session-1",
-  agentId: "main",
+  ...sessionIdentity("session-1"),
   profileId: "test",
   executionMode: "worker-turn",
 };
 
 export const MOVE_REQUEST: WorkerPlacementMoveRequest = {
-  sessionId: REQUEST.sessionId,
-  sessionKey: REQUEST.sessionKey,
-  agentId: REQUEST.agentId,
+  ...sessionIdentity(REQUEST.sessionId),
   source: { generation: 4, environmentId: "worker-source", ownerEpoch: 7 },
   target: { kind: "gateway" },
 };
 
-export const LOCAL_PLACEMENT = {
-  ...REQUEST,
-  state: "local",
-  generation: 1,
-  turnClaim: null,
-  createdAtMs: 1,
-  updatedAtMs: 1,
-  stateChangedAtMs: 1,
-  environmentId: null,
-  activeOwnerEpoch: null,
-  workspaceBaseManifestRef: null,
-  remoteWorkspaceDir: null,
-  workerBundleHash: null,
-  lastTranscriptAckCursor: null,
-  lastLiveEventAckCursor: null,
-  recoveryError: null,
-  terminalReason: null,
-  terminalAtMs: null,
-} satisfies WorkerDispatchPlacement;
+export const LOCAL_PLACEMENT = Object.assign(localPlacement(), REQUEST);
 
 export const PROVISIONING_PLACEMENT = {
   ...LOCAL_PLACEMENT,
@@ -95,8 +70,11 @@ export function createCoordinatorTestService(overrides: Partial<DispatchService>
     move: unexpected,
     reclaim: unexpected,
     forceDestroyEnvironment: unexpected,
+    getEnvironmentAttachedSessionIds: () => [],
+    readEnvironmentSessionIds: async () => [],
     reconcile: unexpected,
     reconcileActive: unexpected,
+    isInterruptedTurn: () => false,
     resumeProvisioning: unexpected,
     ...overrides,
   };

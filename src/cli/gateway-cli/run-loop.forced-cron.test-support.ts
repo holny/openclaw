@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isAgentRunRestartAbortReason } from "../../agents/run-termination.js";
 import { CronService } from "../../cron/service.js";
-import {
-  abortActiveCronTaskRuns,
-  waitForActiveCronTaskRuns,
-} from "../../cron/service/active-run-cancellation.js";
+import { getSuspensionVisibleCronTaskRunCount } from "../../cron/service/active-run-cancellation.js";
 import { GatewayConnectionWork } from "../../gateway/server-connection-work.js";
+import { drainGatewayCron } from "../../gateway/server-cron-drain.js";
 import { runGatewayCloseSteps } from "../../gateway/server-shutdown.js";
 import { writeGatewayRestartIntentSync } from "../../infra/restart-intent.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../../process/gateway-work-admission.js";
@@ -24,7 +23,9 @@ const cleanupMayFinish = createDeferredCore();
 let starts = 0;
 process.on("message", (message) => {
   if (message === "inspect") {
-    trace(`held:starts=${starts}:pending=${connectionWork.hasPendingWork}`);
+    trace(
+      `held:starts=${starts}:connectionPending=${connectionWork.hasPendingWork}:cronPending=${getSuspensionVisibleCronTaskRunCount()}`,
+    );
   } else if (message === "release") {
     cleanupMayFinish.resolve();
   }
@@ -45,22 +46,23 @@ const cron = new CronService({
       abortSignal.addEventListener("abort", () => cancelled.resolve(), { once: true });
       onExecutionStarted?.();
       coreStarted.resolve();
-      trace("cron-started");
       if (!force) {
         await cancelled.promise;
-        trace(`cron-cancelled:${String(abortSignal.reason)}`);
+        assert(isAgentRunRestartAbortReason(abortSignal.reason));
+        trace("cron-cancelled:restart");
       }
       await cleanupMayFinish.promise;
-      if (force) {
-        assert(!abortSignal.aborted, "force restart cancelled admitted work before its budget");
-      }
+      assert(
+        !force || !abortSignal.aborted,
+        "force restart cancelled admitted work before its budget",
+      );
       await fs.writeFile(path.join(root, "cleanup.txt"), "settled\n");
       trace("cron-cleanup-settled");
       return { status: "ok" as const, summary: "settled" };
     }),
 });
 
-await runGatewayLoop({
+const code = await runGatewayLoop({
   ownsProcessLifecycle: true,
   start: async () => {
     starts += 1;
@@ -107,23 +109,18 @@ await runGatewayLoop({
           },
           close: async () => {
             cron.stop();
-            abortActiveCronTaskRuns("Gateway shutting down.");
-            assert((await waitForActiveCronTaskRuns(10_000)).drained);
+            await drainGatewayCron({
+              settlements: [cron.waitForIdle()],
+              logger: { warn: (...args) => assert.fail(JSON.stringify(args)) },
+            });
+            assert.equal(getSuspensionVisibleCronTaskRunCount(), 0);
             trace("close-completed");
           },
-          onError: (message) => {
-            throw new Error(message);
-          },
+          onError: (message) => assert.fail(message),
         });
       },
     };
   },
-  runtime: {
-    log() {},
-    error: console.error,
-    exit: (code) => {
-      trace(`exit:${code}`);
-      process.exit(code);
-    },
-  },
 });
+process.disconnect?.();
+process.exitCode = code;

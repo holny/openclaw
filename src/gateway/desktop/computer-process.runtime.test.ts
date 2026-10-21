@@ -9,6 +9,7 @@ import {
   createColdPluginFixture,
 } from "../../plugins/test-helpers/cold-plugin-fixtures.js";
 import { startComputerHostProcess } from "./computer-process.js";
+import { computerCapabilities } from "./computer.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -19,6 +20,11 @@ it.each(["sync", "async", "reject"] as const)(
     const pluginRoot = path.join(home, "plugin");
     fs.mkdirSync(pluginRoot);
     const pluginId = "fixture-computer";
+    const provider = {
+      id: pluginId,
+      label: "Synthetic computer",
+      generation: "fixture-generation",
+    };
     const fixture = createColdPluginFixture({
       rootDir: pluginRoot,
       pluginId,
@@ -32,10 +38,10 @@ const { appendFileSync } = require("node:fs");
 const { registerComputerUseProvider } = require("openclaw/plugin-sdk/computer-use");
 const record = (event) => appendFileSync(${JSON.stringify(lifecycleFile)}, event + "\\n");
 process.once("exit", (code) => record("exit:" + code));
+record("runtime:" + process.execPath);
 module.exports = {
   id: ${JSON.stringify(pluginId)},
-  register(api) {
-    registerComputerUseProvider(api, {
+  register: (api) => registerComputerUseProvider(api, {
       id: ${JSON.stringify(pluginId)},
       label: "Synthetic computer",
       isAvailable: () => true,
@@ -47,19 +53,11 @@ module.exports = {
             throw new Error("synthetic watcher cleanup failed");
           }
         };
-        if (${JSON.stringify(cleanupMode)} === "sync") {
-          finish();
-          return;
-        }
-        return require("node:fs/promises").readFile(${JSON.stringify(lifecycleFile)}).then(finish);
+        return ${JSON.stringify(cleanupMode)} === "sync"
+          ? finish()
+          : require("node:fs/promises").readFile(${JSON.stringify(lifecycleFile)}).then(finish);
       },
-      capabilities: () => ({
-        contractVersion: 2,
-        provider: { id: ${JSON.stringify(pluginId)}, label: "Synthetic computer", generation: "fixture-generation" },
-        actions: ["screenshot", "left_click"],
-        targets: ["screen"], deliveryModes: ["foreground"], observations: ["image"],
-        features: { recording: false, agentCursor: false, multiDisplay: false },
-      }),
+      capabilities: () => (${JSON.stringify(computerCapabilities(provider))}),
       async openExecution({ executionId, sessionKey }) {
         record("open:" + executionId);
         return {
@@ -71,8 +69,7 @@ module.exports = {
           async close(reason) { record("close:" + reason); },
         };
       },
-    });
-  },
+    }),
 };
 `,
     );
@@ -83,7 +80,7 @@ module.exports = {
     const sdkHost = createCompiledSdkHost([computerUseSdkEntrypoint], (prefix) =>
       tempDirs.make(prefix),
     );
-    // A non-Node `node` earlier on PATH must not become the host worker runtime.
+    // A `node` earlier on PATH must not become the host worker runtime.
     const shimDir = path.join(home, "shim");
     fs.mkdirSync(shimDir);
     const shimName = process.platform === "win32" ? "node.cmd" : "node";
@@ -109,26 +106,21 @@ module.exports = {
       assertCurrent: () => {},
     });
     const executionId = "123e4567-e89b-42d3-a456-426614174000";
+    const invocation = { sessionKey: "fixture-session", assertCurrent: () => {} };
     try {
-      expect((await child.ready).provider).toEqual({
-        id: pluginId,
-        label: "Synthetic computer",
-        generation: "fixture-generation",
-      });
+      expect((await child.ready).provider).toEqual(provider);
       await expect(
         child.invoke({
+          ...invocation,
           command: "screen.snapshot",
           params: { executionId },
-          sessionKey: "fixture-session",
-          assertCurrent: () => {},
         }),
       ).resolves.toEqual({ format: "png", base64: "c3ludGhldGljLXBpeGVscw==" });
       await expect(
         child.invoke({
+          ...invocation,
           command: "computer.act",
           params: { executionId, action: "left_click", x: 1, y: 2 },
-          sessionKey: "fixture-session",
-          assertCurrent: () => {},
         }),
       ).resolves.toEqual({
         ok: true,
@@ -145,6 +137,7 @@ module.exports = {
     }
     expect(child.isCurrent()).toBe(false);
     expect(fs.readFileSync(lifecycleFile, "utf8").trim().split("\n")).toEqual([
+      `runtime:${process.execPath}`,
       `open:${executionId}`,
       "close:completion",
       "watch-stop:start",

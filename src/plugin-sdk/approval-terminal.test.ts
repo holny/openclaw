@@ -7,11 +7,20 @@ import {
 } from "./approval-terminal.js";
 
 function pluginResolvedView(
-  overrides: Partial<PluginApprovalResolvedView>,
+  overrides: Partial<
+    Omit<
+      PluginApprovalResolvedView,
+      "approvalId" | "approvalKind" | "phase" | "title" | "metadata" | "severity"
+    >
+  >,
 ): PluginApprovalResolvedView {
   return {
+    approvalId: "approval-1",
     approvalKind: "plugin",
     phase: "resolved",
+    title: "Plugin Approval",
+    metadata: [],
+    severity: "info",
     decision: "deny",
     ...overrides,
   };

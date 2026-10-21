@@ -42,7 +42,7 @@ describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
 });
 
 async function publishPluginTerminal(status: "denied" | "expired" | "cancelled") {
-  const handlePluginApprovalResolved = vi.fn(async () => {});
+  const handlePluginApprovalResolved = vi.fn(async (_event: { terminalStatus?: string }) => {});
   await publishAppliedApprovalResolution({
     record: {
       id: "plugin:1",
@@ -77,7 +77,7 @@ describe("publishAppliedApprovalResolution for plugin approvals", () => {
     const forwarded = await publishPluginTerminal("denied");
     expect(forwarded).toHaveBeenCalledTimes(1);
     expect(forwarded).toHaveBeenCalledWith(expect.objectContaining({ decision: "deny" }));
-    const event = forwarded.mock.calls[0]?.[0] as { terminalStatus?: string };
-    expect(event.terminalStatus).toBeUndefined();
+    const event = forwarded.mock.calls[0]?.[0];
+    expect(event?.terminalStatus).toBeUndefined();
   });
 });

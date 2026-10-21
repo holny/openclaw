@@ -8,6 +8,7 @@ import {
   createPluginDependencyResolver,
   resolvePluginModulePackageRoot,
 } from "./plugin-package-metadata-capture.js";
+import { openClawHostRootsMatch } from "./plugin-peer-link.js";
 import { collectPluginSafetyInspectedFiles } from "./plugin-safety-inspected-files.js";
 import type { PluginNativeNamespaceFact } from "./plugin-source-admission.types.js";
 import {
@@ -51,15 +52,11 @@ export function capturePluginNativeDirectoryAliases(
   packageRoots: Readonly<Record<string, string>>,
 ): Map<string, string> {
   const directories = new Map<string, string>();
-  for (const [alias, namespace] of selected) {
-    const root = Object.keys(packageRoots)
-      .filter((candidate) => isPathInside(candidate, alias))
-      .toSorted((left, right) => right.length - left.length)[0];
+  const roots = Object.keys(packageRoots).toSorted((left, right) => right.length - left.length);
+  for (const [alias, { capturedRoot }] of selected) {
+    const root = roots.find((candidate) => isPathInside(candidate, alias));
     if (root) {
-      directories.set(
-        path.join(packageRoots[root]!, path.relative(root, alias)),
-        namespace.capturedRoot,
-      );
+      directories.set(path.join(packageRoots[root]!, path.relative(root, alias)), capturedRoot);
     }
   }
   return directories;
@@ -69,25 +66,34 @@ export function capturePluginNativeDirectoryAliases(
 export function assertPluginNativeNamespaceHost(
   fact: PluginNativeNamespaceFact,
   hostRoot: string,
+  pluginRoot: string,
 ): void {
   if (!fact.referenceRoot) {
     return;
   }
-  for (const directory of createRequire(
-    path.join(fact.sourceDirectory, "native-host.cjs"),
-  ).resolve.paths("openclaw") ?? []) {
-    const candidate = path.join(directory, "openclaw");
-    if (!isPathInside(fact.referenceRoot, candidate) || !fs.existsSync(candidate)) {
+  const pluginDirectory = fs.realpathSync(pluginRoot);
+  // Hoisted native dependencies need not have a host peer. The admitting plugin does,
+  // and any host visible from the native directory must agree with that selection.
+  for (const directory of new Set([pluginDirectory, fs.realpathSync(fact.sourceDirectory)])) {
+    const candidate = createRequire(path.join(directory, "native-host.cjs"))
+      .resolve.paths("openclaw")
+      ?.map((modules) => path.join(modules, "openclaw"))
+      .find((filename) => fs.existsSync(filename));
+    const resolvedHost = candidate ? fs.realpathSync(candidate) : undefined;
+    if (
+      (resolvedHost && openClawHostRootsMatch(resolvedHost, hostRoot)) ||
+      (!candidate && directory !== pluginDirectory)
+    ) {
       continue;
     }
-    if (fs.realpathSync(candidate) === hostRoot) {
-      return;
-    }
-    break;
+    throw new Error(
+      `Retained native directory ${fact.sourceDirectory} does not resolve the selected OpenClaw host ${hostRoot}: ` +
+        (candidate
+          ? `${candidate} resolves to ${resolvedHost}`
+          : `no OpenClaw peer resolves from ${directory}`) +
+        ". Run openclaw doctor --fix with the selected host to repair the installed plugin's OpenClaw peer link, then reload the plugin.",
+    );
   }
-  throw new Error(
-    "Retained native directory does not resolve the selected OpenClaw host; repair the installed plugin's OpenClaw peer link before loading it.",
-  );
 }
 
 function inspectDirectory(
@@ -224,6 +230,7 @@ export function capturePluginNativeNamespace(params: {
   boundary: string;
   capturedRoot: string;
   managed: boolean;
+  copyOnly: boolean;
   outputRoot?: string;
   previous?: PluginNativeNamespaceFact;
   inspectionRoots?: readonly string[];
@@ -263,6 +270,7 @@ export function capturePluginNativeNamespace(params: {
   }
   const directory = path.join(capturedRoot, "content");
   const linkedSources = new Set<string>();
+  const captureDevice = fs.statSync(capturedRoot, { bigint: true }).dev;
   let referenceRoot: string | undefined;
   try {
     for (const [relative, member] of before) {
@@ -277,6 +285,8 @@ export function capturePluginNativeNamespace(params: {
       } else if (member.stat.isDirectory()) {
         fs.mkdirSync(target, { recursive: true, mode: 0o700 });
       } else if (
+        !params.copyOnly &&
+        member.stat.dev === captureDevice &&
         (previous ||
           (managed &&
             (params.managedRoots ?? [boundary]).some((root) =>
@@ -288,11 +298,11 @@ export function capturePluginNativeNamespace(params: {
         linkedSources.add(member.source);
       } else {
         copyPluginSourceFile(member.source, member.boundary, target);
-        fs.chmodSync(target, 0o600 | Number(member.stat.mode & 0o100n));
       }
     }
   } catch (error) {
     if (
+      params.copyOnly ||
       !managed ||
       previous ||
       !params.retainedRoot ||

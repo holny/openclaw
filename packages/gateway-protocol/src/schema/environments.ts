@@ -1,5 +1,6 @@
 // Gateway Protocol schema module defines protocol validation shapes.
 import { Type, type Static } from "typebox";
+import { NODE_WORKER_CAPACITY_MAX } from "../worker-capacity.js";
 import { closedObject } from "./closed-object.js";
 import { NonEmptyString } from "./primitives.js";
 
@@ -68,12 +69,18 @@ export const WorkerDesktopAppIdSchema = Type.Union([
 ]);
 
 /** Actionable issue attached only to runtime targets that need operator intervention. */
-export const RuntimeTargetIssueSchema = closedObject({
-  code: Type.Literal("update-required"),
-  action: Type.Literal("update-and-reconnect"),
-  updateCommand: Type.Literal("openclaw update"),
-  headlessReconnectCommand: Type.Literal("openclaw node restart"),
-});
+export const RuntimeTargetIssueSchema = Type.Union([
+  closedObject({
+    code: Type.Literal("update-required"),
+    action: Type.Literal("update-and-reconnect"),
+    updateCommand: Type.Literal("openclaw update"),
+    headlessReconnectCommand: Type.Literal("openclaw node restart"),
+  }),
+  closedObject({
+    code: Type.Literal("worker-host-unavailable"),
+    message: Type.String({ minLength: 1, maxLength: 1_024 }),
+  }),
+]);
 
 const NodeWorkerBundleStatusSchema = Type.Union([
   closedObject({ status: Type.Literal("installed"), version: NonEmptyString }),
@@ -83,8 +90,8 @@ const NodeWorkerBundleStatusSchema = Type.Union([
 /** Bounded live worker slots advertised by a connected node host. */
 export const WorkerSlotSummarySchema = Type.Refine(
   closedObject({
-    total: Type.Integer({ minimum: 1, maximum: 1_024 }),
-    available: Type.Integer({ minimum: 0, maximum: 1_024 }),
+    total: Type.Integer({ minimum: 1, maximum: NODE_WORKER_CAPACITY_MAX }),
+    available: Type.Integer({ minimum: 0, maximum: NODE_WORKER_CAPACITY_MAX }),
     reclaimableIdle: Type.Optional(Type.Integer({ minimum: 0, maximum: 2 })),
   }),
   (slots) => slots.available + (slots.reclaimableIdle ?? 0) <= slots.total,
@@ -102,14 +109,44 @@ export const RequiredNodeCommandStateSchema = Type.Union([
 export const RequiredNodeCommandSchema = closedObject({
   command: Type.String({ minLength: 1, maxLength: 128 }),
   state: RequiredNodeCommandStateSchema,
+  message: Type.Optional(NonEmptyString),
 });
 
 /** Worker-only lifecycle metadata layered onto the existing environment projection. */
+export const WorkerEnvironmentStartStatusSchema = Type.Union([
+  closedObject({
+    mode: Type.Literal("snapshot"),
+    phase: Type.Optional(Type.Literal("saving")),
+  }),
+  closedObject({
+    mode: Type.Literal("cold"),
+    reason: Type.Union([
+      Type.Literal("no-snapshot-yet"),
+      Type.Literal("setup-changed"),
+      Type.Literal("snapshot-retiring"),
+      Type.Literal("snapshot-unavailable"),
+      Type.Literal("os-unsupported"),
+      Type.Literal("warm-images-off"),
+      Type.Literal("capture-paused"),
+      Type.Literal("backend-cannot-snapshot"),
+      Type.Literal("class-unknown"),
+    ]),
+    phase: Type.Union([
+      Type.Literal("provisioning"),
+      Type.Literal("preparing"),
+      Type.Literal("saving"),
+    ]),
+  }),
+]);
+
+export type WorkerEnvironmentStartStatus = Static<typeof WorkerEnvironmentStartStatusSchema>;
+
 export const WorkerEnvironmentMetadataSchema = closedObject({
   profileId: Type.Optional(NonEmptyString),
   providerId: NonEmptyString,
   leaseId: Type.Optional(NonEmptyString),
   state: WorkerEnvironmentStateSchema,
+  startStatus: Type.Optional(WorkerEnvironmentStartStatusSchema),
   ageMs: Type.Integer({ minimum: 0 }),
   idleMs: Type.Optional(Type.Integer({ minimum: 0 })),
   destroyRequestedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -131,6 +168,7 @@ function createEnvironmentSummaryProperties() {
     platform: Type.Optional(NonEmptyString),
     sessionHost: Type.Optional(Type.Boolean()),
     workerSlots: Type.Optional(WorkerSlotSummarySchema),
+    workerHost: Type.Optional(closedObject({ deviceFolders: Type.Optional(Type.Literal(true)) })),
     workerBundle: Type.Optional(NodeWorkerBundleStatusSchema),
     lastConnectedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
     lastDisconnectedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -225,6 +263,7 @@ export const WorkerExecutionModeSchema = Type.Union([
 const WorkerEnvironmentProfileSummarySchema = closedObject({
   id: NonEmptyString,
   providerId: NonEmptyString,
+  inference: Type.Optional(Type.Literal("worker")),
   readyWorkers: Type.Optional(Type.Integer({ minimum: 0 })),
   providerDisplayId: Type.Optional(
     Type.String({ pattern: "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])", maxLength: 64 }),
@@ -243,10 +282,34 @@ const WorkerEnvironmentProfileSummarySchema = closedObject({
   ),
 });
 
+/** A discoverable config proposal, never an admitted placement destination. */
+export const SuggestedWorkerProfileSummarySchema = closedObject({
+  id: NonEmptyString,
+  providerId: NonEmptyString,
+  providerDisplayId: Type.Optional(
+    Type.String({ pattern: "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])", maxLength: 64 }),
+  ),
+});
+
+export const EnvironmentsAdoptSuggestedProfileParamsSchema = closedObject({});
+export const EnvironmentsAdoptSuggestedProfileResultSchema = closedObject({
+  profile: WorkerEnvironmentProfileSummarySchema,
+});
+export type SuggestedWorkerProfileSummary = Static<typeof SuggestedWorkerProfileSummarySchema>;
+export type WorkerEnvironmentProfileSummary = Static<typeof WorkerEnvironmentProfileSummarySchema>;
+export type EnvironmentsAdoptSuggestedProfileParams = Static<
+  typeof EnvironmentsAdoptSuggestedProfileParamsSchema
+>;
+export type EnvironmentsAdoptSuggestedProfileResult = Static<
+  typeof EnvironmentsAdoptSuggestedProfileResultSchema
+>;
+
 /** Profile-only requests leave environments empty without reading inventory. */
 export const EnvironmentsListResultSchema = closedObject({
+  requiredProfile: Type.Optional(NonEmptyString),
   environments: Type.Array(EnvironmentSummarySchema),
   profiles: Type.Optional(Type.Array(WorkerEnvironmentProfileSummarySchema)),
+  suggestedProfile: Type.Optional(SuggestedWorkerProfileSummarySchema),
   preparedPool: Type.Optional(
     closedObject({
       maxTotal: Type.Integer({ minimum: 0 }),

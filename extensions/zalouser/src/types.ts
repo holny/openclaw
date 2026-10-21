@@ -1,7 +1,4 @@
-import type {
-  ChannelMessageSendTextContext,
-  MessageReceipt,
-} from "openclaw/plugin-sdk/channel-outbound";
+import type { ChannelMessageSendTextContext } from "openclaw/plugin-sdk/channel-outbound";
 import type { z } from "zod";
 import type {
   ZalouserAccountSchema,
@@ -22,11 +19,7 @@ export type ZaloGroup = {
   memberCount?: number;
 };
 
-export type ZaloGroupMember = {
-  userId: string;
-  displayName: string;
-  avatar?: string;
-};
+export type ZaloGroupMember = ZcaFriend;
 
 export type ZaloEventMessage = {
   msgId: string;
@@ -56,17 +49,12 @@ export type ZaloInboundMessage = {
   canResolveExplicitMention?: boolean;
   implicitMention?: boolean;
   quotedGlobalMsgId?: string;
-  quotedOwnerId?: string;
   quotedBody?: string;
   eventMessage?: ZaloEventMessage;
   raw: unknown;
 };
 
-export type ZcaUserInfo = {
-  userId: string;
-  displayName: string;
-  avatar?: string;
-};
+export type ZcaUserInfo = ZcaFriend;
 
 export type ZaloSendHandoff = Pick<
   ChannelMessageSendTextContext,
@@ -85,13 +73,6 @@ export type ZaloSendOptions = ZaloSendHandoff & {
   textChunkMode?: "length" | "newline";
   textChunkLimit?: number;
   textStyles?: Style[];
-};
-
-export type ZaloSendResult = {
-  ok: boolean;
-  messageId?: string;
-  receipt: MessageReceipt;
-  error?: string;
 };
 
 export type ZaloGroupContext = {

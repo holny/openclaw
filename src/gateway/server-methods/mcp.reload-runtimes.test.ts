@@ -2,6 +2,7 @@
 // revalidates the caller's mutation authority immediately before it (#164642).
 import { describe, expect, it, vi } from "vitest";
 import * as managerApi from "../../agents/agent-bundle-mcp-manager-api.js";
+import { expectDefined } from "../../plugin-sdk/expect-runtime.js";
 import { mcpAppHandlers } from "./mcp-app.js";
 
 function handlerOptions() {
@@ -23,8 +24,10 @@ describe("mcp.reloadRuntimes", () => {
     const reloadSpy = vi.spyOn(managerApi, "reloadSessionMcpRuntimes").mockResolvedValue(undefined);
     const { options, hasCurrentClientAuthority } = handlerOptions();
     const respond = options.respond;
-    const handler = mcpAppHandlers["mcp.reloadRuntimes"];
-    expect(handler).toBeDefined();
+    const handler = expectDefined(
+      mcpAppHandlers["mcp.reloadRuntimes"],
+      "expected the mcp.reloadRuntimes handler",
+    );
 
     await handler(options);
 
@@ -38,7 +41,10 @@ describe("mcp.reloadRuntimes", () => {
   it("reports reload failures instead of acknowledging them", async () => {
     vi.spyOn(managerApi, "reloadSessionMcpRuntimes").mockRejectedValue(new Error("reload boom"));
     const { options, respond } = handlerOptions();
-    const handler = mcpAppHandlers["mcp.reloadRuntimes"];
+    const handler = expectDefined(
+      mcpAppHandlers["mcp.reloadRuntimes"],
+      "expected the mcp.reloadRuntimes handler",
+    );
 
     await handler(options);
 

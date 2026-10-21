@@ -26,30 +26,6 @@ export const bundledChannelIds = Object.freeze(
     .filter((channelId) => channelId.length > 0),
 );
 
-const bundledChannelIdSet = new Set(bundledChannelIds);
-const bundledChannelAliases = new Map<string, string>(
-  GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA.filter((entry) => entry.configurable !== false).flatMap(
-    (entry) => {
-      const channelId = normalizeLowercaseStringOrEmpty(entry.channelId);
-      if (!channelId) {
-        return [];
-      }
-      return (entry.aliases ?? [])
-        .map((alias) => [normalizeLowercaseStringOrEmpty(alias), channelId] as const)
-        .filter(([alias]) => alias.length > 0);
-    },
-  ),
-);
-
-export function normalizeBundledChannelId(raw?: string | null): string | null {
-  const normalized = normalizeLowercaseStringOrEmpty(raw);
-  if (!normalized) {
-    return null;
-  }
-  const resolved = bundledChannelAliases.get(normalized) ?? normalized;
-  return bundledChannelIdSet.has(resolved) ? resolved : null;
-}
-
 function buildDmPolicyDependencyWarning(params: {
   channelId: string;
   accountId?: string;
@@ -138,16 +114,33 @@ export function collectChannelDmPolicyDependencyWarnings(
     if (mode === "nestedOnly") {
       continue;
     }
-    const channelViolation = evaluateDmPolicyAllowFromDependency({
-      policy: resolveChannelDmPolicy({ account: channelValue, mode }),
-      allowFrom: resolveChannelDmAllowFrom({ account: channelValue, mode }),
-    });
-    if (
-      channelViolation &&
-      (channelViolation !== "open_requires_wildcard" || openDmRequiresAllowFromWildcard)
-    ) {
-      warnings.push(buildDmPolicyDependencyWarning({ channelId, violation: channelViolation }));
-    }
+    const appendWarning = (account: Record<string, unknown>, accountId?: string) => {
+      const parent = accountId === undefined ? undefined : channelValue;
+      const access = { account, parent, mode };
+      const violation = evaluateDmPolicyAllowFromDependency({
+        policy: resolveChannelDmPolicy(access),
+        allowFrom: resolveChannelDmAllowFrom(access),
+      });
+      if (
+        violation &&
+        (violation !== "open_requires_wildcard" || openDmRequiresAllowFromWildcard)
+      ) {
+        warnings.push(
+          buildDmPolicyDependencyWarning({
+            channelId,
+            accountId,
+            allowFromSource:
+              accountId === undefined
+                ? undefined
+                : hasConfiguredDmAllowFrom(account)
+                  ? "explicit"
+                  : "inherited",
+            violation,
+          }),
+        );
+      }
+    };
+    appendWarning(channelValue);
     if (!isRecord(channelValue.accounts)) {
       continue;
     }
@@ -155,24 +148,7 @@ export function collectChannelDmPolicyDependencyWarnings(
       if (!isRecord(accountValue) || accountValue.enabled === false) {
         continue;
       }
-      const allowFromSource = hasConfiguredDmAllowFrom(accountValue) ? "explicit" : "inherited";
-      const accountViolation = evaluateDmPolicyAllowFromDependency({
-        policy: resolveChannelDmPolicy({ account: accountValue, parent: channelValue, mode }),
-        allowFrom: resolveChannelDmAllowFrom({ account: accountValue, parent: channelValue, mode }),
-      });
-      if (
-        accountViolation &&
-        (accountViolation !== "open_requires_wildcard" || openDmRequiresAllowFromWildcard)
-      ) {
-        warnings.push(
-          buildDmPolicyDependencyWarning({
-            channelId,
-            accountId,
-            allowFromSource,
-            violation: accountViolation,
-          }),
-        );
-      }
+      appendWarning(accountValue, accountId);
     }
   }
   return warnings;

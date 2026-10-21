@@ -20,8 +20,14 @@
     "../../src/agents/bash-tools*.test.tsx",
     "../../src/agents/code-mode*.test.ts",
     "../../src/agents/code-mode*.test.tsx",
-    "../../src/agents/model-catalog-view.test.ts",
     "../../src/agents/tool-*.test.ts",
     "../../src/agents/tool-*.test.tsx"
+  ],
+  "exclude": [
+    "../../node_modules",
+    "../../dist",
+    "../../**/dist/**",
+    "../../src/agents/tools/cron-*.test.ts",
+    "../../src/agents/tools/cron-*.test.tsx"
   ]
 }

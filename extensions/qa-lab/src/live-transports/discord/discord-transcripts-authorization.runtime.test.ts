@@ -6,7 +6,7 @@ const { requestDiscordMock } = vi.hoisted(() => ({ requestDiscordMock: vi.fn() }
 
 vi.mock("@openclaw/discord/api.js", () => ({ requestDiscord: requestDiscordMock }));
 
-import { discordQaScenarioSupport } from "./discord-live.runtime.js";
+import * as testing from "./discord-live.runtime.js";
 import {
   discordQaTranscriptsVoiceAuthorizationScenario,
   runDiscordTranscriptsVoiceAuthorizationScenario,
@@ -19,7 +19,6 @@ function createEnvironment(outputDir: string) {
   return {
     configureScenario: vi.fn<DiscordQaScenarioEnvironment["configureScenario"]>(),
     driverIdentity: { id: "423456789012345678", bot: true },
-    observedMessages: [],
     outputDir,
     runtimeEnv: {
       guildId: "123456789012345678",
@@ -53,7 +52,6 @@ describe("Discord transcript authorization scenario runner", () => {
     }
     const configureTranscriptVoiceAccess = vi.fn(async () => {});
     const environment = createEnvironment(outputDir);
-    const testing = discordQaScenarioSupport.testing;
     const send = vi
       .spyOn(testing, "sendChannelMessage")
       .mockResolvedValueOnce({
@@ -78,7 +76,6 @@ describe("Discord transcript authorization scenario runner", () => {
           messageId: "623456789012345672",
           channelId: environment.runtimeEnv.channelId,
           senderId: environment.sutIdentity.id,
-          senderIsBot: true,
           text: `${run.negativeMarker} You are not authorized to use this command.`,
         },
       })
@@ -88,7 +85,6 @@ describe("Discord transcript authorization scenario runner", () => {
           messageId: "623456789012345674",
           channelId: environment.runtimeEnv.channelId,
           senderId: environment.sutIdentity.id,
-          senderIsBot: true,
           text: run.positiveMarker,
         },
       })
@@ -98,7 +94,6 @@ describe("Discord transcript authorization scenario runner", () => {
           messageId: "623456789012345676",
           channelId: environment.runtimeEnv.channelId,
           senderId: environment.sutIdentity.id,
-          senderIsBot: true,
           text: run.stopMarker,
         },
       });
@@ -161,7 +156,6 @@ describe("Discord transcript authorization scenario runner", () => {
     const outputDir = tempDirs.make("discord-transcript-auth-unconfirmed-");
     const environment = createEnvironment(outputDir);
     const run = discordQaTranscriptsVoiceAuthorizationScenario.buildRun("323456789012345678");
-    const testing = discordQaScenarioSupport.testing;
     vi.spyOn(testing, "getCurrentDiscordVoiceState").mockRejectedValue(
       new Error("REST unavailable"),
     );

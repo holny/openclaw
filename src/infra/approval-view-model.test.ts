@@ -150,7 +150,7 @@ describe("buildPendingApprovalView", () => {
 });
 
 describe("buildResolvedApprovalView for plugin terminal status", () => {
-  const pluginRequest: PluginApprovalRequest = {
+  const pluginRequestFixture: PluginApprovalRequest = {
     id: "plugin-approval",
     createdAtMs: 1,
     expiresAtMs: 2,
@@ -171,7 +171,7 @@ describe("buildResolvedApprovalView for plugin terminal status", () => {
         terminalStatus,
       };
 
-      const view = buildResolvedApprovalView(pluginRequest, resolved);
+      const view = buildResolvedApprovalView(pluginRequestFixture, resolved);
 
       expect(view.approvalKind).toBe("plugin");
       if (view.approvalKind !== "plugin") {
@@ -183,7 +183,7 @@ describe("buildResolvedApprovalView for plugin terminal status", () => {
   );
 
   it("omits terminal status for a user-decided plugin resolution", () => {
-    const view = buildResolvedApprovalView(pluginRequest, {
+    const view = buildResolvedApprovalView(pluginRequestFixture, {
       id: "plugin-approval",
       decision: "deny",
       resolvedBy: "operator",
